@@ -3,9 +3,10 @@
 ## Prerequisites
 
 - Go 1.20+ installed
+- Python 3.9+ installed
 - `protoc` (Protocol Buffers compiler) installed
 - `protoc-gen-go` and `protoc-gen-go-grpc` plugins installed
-- Update HERE
+- Python Community Edition plugin installed (optional)
 
 ## Project structure
 
@@ -56,4 +57,24 @@ distributed-random-forest/
 ```bash
 go mod init FIX HERE
 go mod tidy
+```
+
+## 2. Activate the virtual environment for Python
+```bash
+.\venv\Scripts\activate
+```
+
+## 3. Update/install the necessary Python libs
+```bash
+pip install grpcio grpcio-tools protobuf scikit-learn pandas numpy
+```
+
+## 4. Generate .go files using protoc (worker and master)
+```bash
+protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative api/proto/worker/v1/worker.proto
+```
+
+## 5. Generate .py files 
+```bash
+python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. api/proto/worker/v1/worker.proto
 ```
