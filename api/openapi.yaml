@@ -20,16 +20,19 @@ paths:
                   type: string
                   description: public URL of the training dataset.
                   example: "s3.//my-datasets/iris.csv"
-
-                  # (examples of hyperparameters)
-                  n_estimators:
-                    type: integer
-                    description: Total number of trees to train in the forest.
-                    default: 100
-                  maxdepth:
-                    type: integer
-                    description: Maximum nesting depth of each tree.
-                    nullable: true
+                task_type:
+                  type: string
+                  enum: [ classification, regression ]
+                  description: Type of ML problem to solve.
+                # (examples of hyperparameters)
+                n_estimators:
+                  type: integer
+                  description: Total number of trees to train in the forest.
+                  default: 100
+                maxdepth:
+                  type: integer
+                  description: Maximum nesting depth of each tree.
+                  nullable: true
 
               required: dataset_url
         responses:
