@@ -1,0 +1,126 @@
+openapi: 3.0.3
+info:
+    title: Distributed RandomForest API
+    description: API for training and inference of distributed RandomForest models.
+    version: 1.0.0
+
+paths:
+    /train:
+      post:
+        summary: Start a new training process.
+        description: Start the asynchronous training of a new RandomForest model.
+        requestBoody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type:object
+              properties:
+                dataset_url:
+                  type: string
+                  description: public URL of the training dataset.
+                  example: "s3.//my-datasets/iris.csv"
+
+                  # (examples of hyperparameters)
+                  n_estimators:
+                    type: integer
+                    description: Total number of trees to train in the forest.
+                    default: 100
+                  maxdepth:
+                    type: integer
+                    description: Maximum nesting depth of each tree.
+                    nullable: true
+
+              required: dataset_url
+        responses:
+          '202':
+            description: Training accepted and started in background.
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    model_id:
+                      type: string
+                      format: uuid
+                      description: unique ID assigned to the model for future requests.
+          '400':
+            description: Invalid request (eg. malformed URL)
+
+    /models/{model_id}:
+      get:
+        summary: Check model status
+        parameters:
+          - name: model_id
+            in: path
+            required: true
+            schema:
+              type: string
+              format: uuid
+        responses:
+          '200':
+            description: Current state of the model.
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    model_id:
+                      type: string
+                      format: uuid
+                    status:
+                      type: string
+                      enum: [ training, ready, failed ]
+                    created_at:
+                      type: string
+                      format: date-time
+          '404':
+            description: Model not found.
+
+    /predict/{model_id}:
+      post:
+        summary: Execute inference using a trained model.
+        parameters:
+          - name: model_id
+            in: path
+            required: true
+            schema:
+              type: string
+              format: uuid
+        requestBody:
+          description: Data to use for the prediction. Format must be a JSON object where each key is the name of a feature and the value is the corresponding feature value.
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                # accepts a generic JSON object
+                # validation happens at runtime
+                additionalProperties: true
+                example:
+                  {
+                    "sepal_length": 5.1,
+                    "sepal_width": 3.5,
+                    "petal_length": 1.4,
+                    "petal_width": 0.2
+                  }
+        responses:
+          '200':
+            description: Prediction result.
+            content:
+              application/json:
+                schema:
+                  type: object
+                  properties:
+                    prediction:
+                      # todo enter prediction format
+                      oneOf:
+                        - type: string
+                        - type: number
+          '400':
+            description: Invalid inference input.
+          '404':
+            description: Model not found.
+          '409':
+            description: Model not yet ready for inference (still training).
+
