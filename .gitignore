@@ -1,0 +1,13 @@
+# Python virtual environment
+venv/
+
+# Python Cache
+__pycache__/
+*.pyc
+
+# Go binary files
+/master_executable  # Esempio
+
+# IDE generated files
+.idea/
+.vscode/
