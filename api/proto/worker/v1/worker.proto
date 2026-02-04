@@ -1,0 +1,63 @@
+syntax = "proto3";
+
+package worker.v1;
+
+option go_package = "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1;workerv1";
+
+enum TaskType {
+  TASK_TYPE_UNSPECIFIED = 0;
+  TASK_TYPE_CLASSIFICATION = 1;
+  TASK_TYPE_REGRESSION = 2;
+}
+
+
+// EXPORTED SERVICES
+
+service WorkerService {
+  // Start training a subset of trees
+  rpc Train (TrainRequest) returns (TrainResponse);
+
+  // Inference on given input
+  rpc Predict (PredictRequest) returns (PredictResponse);
+
+  // Health check for fault tolerance
+  rpc Health (HealthRequest) returns (HealthResponse);
+}
+
+
+// MESSAGES
+
+message TrainRequest {
+  string model_id = 1;
+  string dataset_url = 2;
+  TaskType task_type = 3;
+
+  // RandomForest hyperparameters
+  int32 n_estimators = 4;
+  int32 max_depht = 5;
+}
+
+message TrainResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message PredictRequest {
+  string model_id = 1;
+  //serialized data (float array for now so it's easier)
+  repeated float features = 2;
+
+}
+
+message PredictResponse {
+  //for now the worker returns th aggregated prediction. todo check this
+  repeated float predictions = 1;
+  float value = 2;
+
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy = 1;
+}
