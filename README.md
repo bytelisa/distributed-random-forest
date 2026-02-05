@@ -69,7 +69,7 @@ go mod tidy
 pip install grpcio grpcio-tools protobuf scikit-learn pandas numpy
 ```
 
-## 4. Generate .go files using protoc (worker and master)
+## 4. Generate .go files using protoc 
 ```bash
 protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative api/proto/worker/v1/worker.proto
 ```
@@ -77,4 +77,14 @@ protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=p
 ## 5. Generate .py files 
 ```bash
 python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. api/proto/worker/v1/worker.proto
+```
+
+## 6. Launch a Worker
+```bash
+python cmd/worker/worker_main.py
+```
+
+## 7. Launch the Master
+```bash
+go run cmd/master/master_main.go
 ```

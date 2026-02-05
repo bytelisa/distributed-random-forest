@@ -15,6 +15,8 @@ from services.worker.worker_service import WorkerService
 def serve():
     print("Worker service starting...")
 
+    # The worker acts as a grpc server towards the master, which acts as a grpc client requesting the worker's services.
+
     # Create a gRPC sever
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
 

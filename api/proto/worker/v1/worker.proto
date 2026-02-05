@@ -5,9 +5,9 @@ package worker.v1;
 option go_package = "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1;workerv1";
 
 enum TaskType {
-  TASK_TYPE_UNSPECIFIED = 0;
-  TASK_TYPE_CLASSIFICATION = 1;
-  TASK_TYPE_REGRESSION = 2;
+  UNSPECIFIED_TASK = 0;
+  CLASSIFICATION_TASK = 1;
+  REGRESSION_TASK = 2;
 }
 
 
@@ -44,7 +44,7 @@ message TrainResponse {
 
 message PredictRequest {
   string model_id = 1;
-  //serialized data (float array for now so it's easier)
+  //serialized data (float array for now so it's easier) todo check this
   repeated float features = 2;
 
 }

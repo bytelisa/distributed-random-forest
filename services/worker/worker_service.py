@@ -19,7 +19,7 @@ class WorkerService(worker_pb2_grpc.WorkerServiceServicer):
         print(f"[Worker] Received training request for model {request.model_id}.")
         print(f"        Dataset: {request.dataset_url}")
         print(f"        Trees: {request.n_estimators}")
-        print(f"        Task: {request.task_type}")
+        print(f"        Task: {worker_pb2.TaskType.Name(request.task_type)}")
 
         # fake training
         time.sleep(2)

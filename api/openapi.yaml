@@ -7,7 +7,7 @@ info:
 paths:
     /train:
       post:
-        summary: Start a new training process.
+        summary: Start a new training process
         description: Start the asynchronous training of a new RandomForest model.
         requestBoody:
           required: true
@@ -55,6 +55,7 @@ paths:
         summary: Check model status
         parameters:
           - name: model_id
+            description: Unique identifier of the trained model.
             in: path
             required: true
             schema:
@@ -82,10 +83,11 @@ paths:
 
     /predict/{model_id}:
       post:
-        summary: Execute inference using a trained model.
+        summary: Execute inference using a trained model
         parameters:
           - name: model_id
             in: path
+            description: Unique identifier of the trained model.
             required: true
             schema:
               type: string

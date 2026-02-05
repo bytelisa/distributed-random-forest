@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
+
 	//"google.golang.org/grpc/credentials/insecure"
 
 	// Import the generated packet.
@@ -16,14 +18,16 @@ import (
 func main() {
 	fmt.Println("Master service starting...")
 
+	// The server acts as a grpc client towards the worker, which acts as a grpc server, exporting its services.
+
 	// Connect to Worker (assume localhost:50051 but todo fix)
-	conn, err := grpc.NewClient("localhost:50051")
+	conn, err := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("could not connect: %v", err)
 	}
 	defer conn.Close()
 
-	// Create Client Stub
+	// Create Client Stub.
 	client := pb.NewWorkerServiceClient(conn)
 
 	// Call HealthCheck just for a quick test
@@ -38,15 +42,15 @@ func main() {
 	fmt.Printf("Worker Response: Healthy=%v\n", r.Healthy)
 
 	// Test with fake Training Request
-	fmt.Println("Sending Train request...")
+	fmt.Println("Sending Training request...")
 	trainResp, err := client.Train(context.Background(), &pb.TrainRequest{
 		ModelId:     "test-model-uuid",
 		DatasetUrl:  "s3://bucket/data.csv",
 		NEstimators: 10,
 	})
 	if err != nil {
-		log.Fatalf("Train failed: %v", err)
+		log.Fatalf("Training failed: %v", err)
 	}
-	fmt.Printf("Train Response: %s\n", trainResp.Message)
+	fmt.Printf("Training Response: %s\n", trainResp.Message)
 
 }
