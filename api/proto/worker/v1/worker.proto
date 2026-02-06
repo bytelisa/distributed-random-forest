@@ -13,7 +13,7 @@ enum TaskType {
 
 // EXPORTED SERVICES
 
-service WorkerService {
+service Worker {
   // Start training a subset of trees
   rpc Train (TrainRequest) returns (TrainResponse);
 

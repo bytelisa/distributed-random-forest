@@ -55,7 +55,7 @@ distributed-random-forest/
 ## 1. Create `go.mod`
 
 ```bash
-go mod init FIX HERE
+go mod init distributed-random-forest
 go mod tidy
 ```
 

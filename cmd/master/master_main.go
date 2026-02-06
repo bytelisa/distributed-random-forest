@@ -9,8 +9,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	//"google.golang.org/grpc/credentials/insecure"
-
 	// Import the generated packet.
 	pb "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1"
 )
@@ -27,8 +25,8 @@ func main() {
 	}
 	defer conn.Close()
 
-	// Create Client Stub.
-	client := pb.NewWorkerServiceClient(conn)
+	// Create Client Stub
+	client := pb.NewWorkerClient(conn)
 
 	// Call HealthCheck just for a quick test
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -45,7 +43,7 @@ func main() {
 	fmt.Println("Sending Training request...")
 	trainResp, err := client.Train(context.Background(), &pb.TrainRequest{
 		ModelId:     "test-model-uuid",
-		DatasetUrl:  "s3://bucket/data.csv",
+		DatasetUrl:  "data/iris.csv",
 		NEstimators: 10,
 	})
 	if err != nil {

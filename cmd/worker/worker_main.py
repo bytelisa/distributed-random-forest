@@ -21,7 +21,7 @@ def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
 
     # Register WorkerService on the server
-    worker_pb2_grpc.add_WorkerServiceServicer_to_server(WorkerService(), server)
+    worker_pb2_grpc.add_WorkerServicer_to_server(WorkerService(), server)
 
     # Listen on port 50051
     port = "50051"
