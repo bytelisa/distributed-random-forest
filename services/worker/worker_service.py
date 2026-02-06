@@ -17,6 +17,13 @@ from services.worker.ml import model
 
 class WorkerService(worker_pb2_grpc.WorkerServicer):
 
+    def _convert_type(self, request):
+        if request.task_type == worker_pb2.TaskType.CLASSIFICATION_TASK:
+            return "classifier"
+        elif request.task_type == worker_pb2.TaskType.REGRESSION_TASK:
+            return "regressor"
+
+
     def Train(self, request, context):
 
         print(f"[Worker] Received training request for model {request.model_id}.")
@@ -27,7 +34,12 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
         # time.sleep(2)
 
         my_dataframe = model.load_dataset(request.dataset_url)
-        serialized_model = model.train_model(my_dataframe)
+        serialized_model = model.train_model(
+            data=my_dataframe,
+            target_column="Species",
+            model_type=self._convert_type(request),
+            n_estimators=request.n_estimators
+        )
 
         if serialized_model is None:
             print(f"[Worker] Training failed for model {request.model_id}.")
@@ -56,5 +68,6 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
         # Helath check: master wants to know if worker is active
         print("[Worker] Health check received.")
         return worker_pb2.HealthResponse(healthy=True)
+
 
 

@@ -22,7 +22,7 @@ def load_dataset(file_path: str) -> pd.DataFrame:
     return df
 
 
-def train_model(data: pd.DataFrame, target_column: str, model_type: str, n_estimators: int) -> bytes:
+def train_model(data: pd.DataFrame, target_column: str, model_type: TaskType, n_estimators: int) -> bytes:
     """
     Trains a RandomForest model (Classifier or Regressor) on the dataset.
     Returns a serialized model as a byte string.

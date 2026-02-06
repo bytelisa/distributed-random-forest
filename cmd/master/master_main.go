@@ -44,6 +44,7 @@ func main() {
 	trainResp, err := client.Train(context.Background(), &pb.TrainRequest{
 		ModelId:     "test-model-uuid",
 		DatasetUrl:  "data/iris.csv",
+		TaskType:    pb.TaskType_CLASSIFICATION_TASK,
 		NEstimators: 10,
 	})
 	if err != nil {
