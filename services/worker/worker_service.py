@@ -31,7 +31,6 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
         print(f"         Trees: {request.n_estimators}")
         print(f"         Task: {worker_pb2.TaskType.Name(request.task_type)}")
 
-        # time.sleep(2)
 
         dataframe = model.load_dataset(request.dataset_url)
         trained_model = model.train_model(
