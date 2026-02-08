@@ -1,103 +1,119 @@
 # model.py
-
-# Implements the machine learning model (RandomForest)
-
-
+import os
+from typing import Union
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.model_selection import train_test_split # Used for splitting data into features and target
+import numpy as np
 import joblib
 import io
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
+class ModelError(Exception):
+    pass
 
-def load_dataset(file_path: str) -> pd.DataFrame:
-    """
-    Loads a dataset from a specified file path (e.g., '/path/to/data.csv' or 's3://bucket/data.csv') into a pandas DataFrame.
-    """
-
-    print(f"Loading dataset from: {file_path}")
-
-    # assumes the dataset is a CSV file (todo fix here in case it's not a csv)
-    df = pd.read_csv(file_path)
-    return df
-
-
-def train_model(data: pd.DataFrame, target_column: str, model_type: TaskType, n_estimators: int) -> bytes:
-    """
-    Trains a RandomForest model (Classifier or Regressor) on the dataset.
-    Returns a serialized model as a byte string.
-    TODO: extend this function to include more hyperparameters
-    """
-
-    print("Starting model training...")
-
-    # --- PREPARE DATA ---
-    # Separate features (X) from the target variable (y).
+def save_model(model, filepath: str):
+    """Serialize the model with joblib."""
     try:
-        X = data.drop(columns=[target_column])
-        y = data[target_column]
-    except KeyError:
-        print(f"Error: Target column '{target_column}' not found in the dataset.")
-        return None
-
-    # TODO: more preprocessing, feature engineering, splitting step etc
-    # add a data splitting step (train/test split). ((For now trains on the whole dataset)).
-    # Add feature engineering and preprocessing steps. Like handling
-    # categorical variables or scaling numerical features.
-
-
-    # --- MODEL INITIALIZATION ---
-    # todo: choose a better initialization
-    if model_type == 'classifier':
-        # Use a fixed random_state for reproducibility.
-        model = RandomForestClassifier(n_estimators=n_estimators, random_state=511)
-        print(f"Initialized RandomForestClassifier with {n_estimators} estimators.")
-
-    elif model_type == 'regressor':
-        model = RandomForestRegressor(n_estimators=n_estimators, random_state=511)
-        print(f"Initialized RandomForestRegressor with {n_estimators} estimators.")
-
-    else:
-        print(f"Error: Invalid model_type '{model_type}'. Choose 'classifier' or 'regressor'.")
-        return None
-
-    # --- MODEL TRAINING ---
-    model.fit(X, y)
-    print("Model training completed successfully.")
-
-    # --- MODEL SERIALIZATION ---
-    # Serialize the trained model object into bytes (pickle) so that we can store it.
-    with io.BytesIO() as buffer:
-        joblib.dump(model, buffer)
-        serialized_model = buffer.getvalue()
-
-    print("Model serialized successfully.")
-    return serialized_model
-
-
-def predict_with_model(serialized_model: bytes, new_data: pd.DataFrame):
-    """
-    Loads a serialized model and uses it to make predictions on new data.
-    """
-    print("Starting prediction...")
-
-    # --- MODEL DESERIALIZATION ---
-    try:
-        with io.BytesIO(serialized_model) as buffer:
-            model = joblib.load(buffer)
-        print("Model deserialized successfully.")
-
+        directory = os.path.dirname(filepath)
+        if directory and not os.path.exists(directory):
+            os.makedirs(directory)
+        joblib.dump(model, filepath)
+        print(f"[Model] Model saved in {filepath}")
     except Exception as e:
-        print(f"Error deserializing the model: {e}")
-        return None
+        raise ModelError(f"[Model] Error while saving model: {e}")
 
-    # TODO: Apply the same data preprocessing on `new_data` as was done on the training data.
+def load_dataset(dataset_path: str) -> pd.DataFrame:
+    """
+    Loads dataset from path.
+    """
+    if not os.path.exists(dataset_path):
+        raise ModelError(f"[Model] Dataset not found at: {dataset_path}")
 
-    # --- INFERENCE ---
-    predictions = model.predict(new_data)
-    print("Prediction completed successfully.")
+    try:
+        df = pd.read_csv(dataset_path)
+        # --- CLEAN HEADERS IMMEDIATELY ---
+        # Remove quotes and spaces from column names to avoid "Column not found" errors
+        df.columns = df.columns.str.replace("'", "").str.replace('"', '').str.strip()
 
-    if predictions is None:
-        print("Model prediction failed.")
+        print(f"[Model] Loaded dataset: {df.shape[0]} rows, {df.shape[1]} columns.")
+        return df
+    except Exception as e:
+        raise ModelError(f"[Model] Could not load dataset from {dataset_path}: {e}")
 
-    return predictions
+def train_model(data: pd.DataFrame, target_column: str, model_type: str, n_estimators: int) -> Union[RandomForestClassifier, RandomForestRegressor]:
+    """
+    Trains a RandomForest model.
+    """
+    print(f"[Model] Starting training for target: {target_column}")
+
+    # 1. VALIDATE TARGET
+    if target_column not in data.columns:
+        raise ModelError(f"Target column '{target_column}' not found. Available: {data.columns.tolist()}")
+
+    # 2. SEPARATE TARGET (y) BEFORE PREPROCESSING X
+    # This prevents accidentally deleting the target if it's a string (e.g. Iris Species)
+    y = data[target_column]
+
+    # 3. PREPARE FEATURES (X)
+    X = data.drop(columns=[target_column])
+
+    # Remove 'Id' column if it exists (it's noise)
+    if 'Id' in X.columns:
+        X = X.drop(columns=['Id'])
+
+    # 4. HANDLE NON-NUMERIC FEATURES
+    # Since gRPC currently sends repeated floats, we only train on numeric columns.
+    # This automatically drops 'ocean_proximity' or other string features from X.
+    X_numeric = X.select_dtypes(include=[np.number])
+
+    # Check if we lost all columns
+    if X_numeric.shape[1] == 0:
+        raise ModelError("Error: No numeric features remained after preprocessing.")
+
+    # 5. HANDLE MISSING VALUES (NaN)
+    # Simple strategy: fill with 0. Necessary for housing.csv (total_bedrooms often has NaNs)
+    X_numeric = X_numeric.fillna(0)
+
+    print(f"[Model] Training on features: {X_numeric.columns.tolist()}")
+
+# todo choose better initialization
+    # 6. MODEL INITIALIZATION
+    if model_type == 'classifier':
+        model = RandomForestClassifier(n_estimators=n_estimators, random_state=42, n_jobs=1)
+    elif model_type == 'regressor':
+        model = RandomForestRegressor(n_estimators=n_estimators, random_state=42, n_jobs=1)
+    else:
+        raise ModelError(f"Invalid model_type '{model_type}'. Choose 'classifier' or 'regressor'.")
+
+    # 7. TRAIN
+    try:
+        model.fit(X_numeric, y)
+        print("[Model] Training completed successfully.")
+        return model
+    except Exception as e:
+        raise ModelError(f"Scikit-learn training failed: {e}")
+
+def load_and_predict(model_path: str, features: list) -> str:
+    """
+    Loads a serialized model and uses it to make predictions.
+    """
+    print("[Model] Starting prediction...")
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"[Model] Model File not found in: {model_path}")
+
+    try:
+        model = joblib.load(model_path)
+    except Exception as e:
+        raise ModelError(f"[Model] Error during deserialization: {e}")
+
+    # Prepare input: reshape list to 2D array (1 sample)
+    new_data = np.array(features).reshape(1, -1)
+
+    try:
+        prediction = model.predict(new_data)
+        result = str(prediction[0])
+        print(f"[Model] Prediction result: {result}")
+        return result
+    except Exception as e:
+        # Often happens if feature count doesn't match
+        raise ModelError(f"[Model] Inference error (check feature count): {e}")
