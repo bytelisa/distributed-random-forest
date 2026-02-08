@@ -1,4 +1,4 @@
-
+import os
 # implements the interface of the Worker Service as per defined in .proto file
 
 
@@ -27,45 +27,65 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
     def Train(self, request, context):
 
         print(f"[Worker] Received training request for model {request.model_id}.")
-        print(f"        Dataset: {request.dataset_url}")
-        print(f"        Trees: {request.n_estimators}")
-        print(f"        Task: {worker_pb2.TaskType.Name(request.task_type)}")
+        print(f"         Dataset: {request.dataset_url}")
+        print(f"         Trees: {request.n_estimators}")
+        print(f"         Task: {worker_pb2.TaskType.Name(request.task_type)}")
 
         # time.sleep(2)
 
-        my_dataframe = model.load_dataset(request.dataset_url)
-        serialized_model = model.train_model(
-            data=my_dataframe,
-            target_column="Species",
+        dataframe = model.load_dataset(request.dataset_url)
+        trained_model = model.train_model(
+            data=dataframe,
+            target_column=request.target_column,
             model_type=self._convert_type(request),
             n_estimators=request.n_estimators
         )
 
-        if serialized_model is None:
+        if trained_model is None:
             print(f"[Worker] Training failed for model {request.model_id}.")
             return worker_pb2.TrainResponse(
                 success=False,
-                message="Training failed for model {request.model_id}."
+                message=f"Training failed for model {request.model_id}."
             )
+
+        model.save_model(trained_model, f"models/model_{request.model_id}.joblib")
+
 
         return worker_pb2.TrainResponse(
             success=True,
-            message="Training completed. (fake)",
+            message="Training completed.",
         )
 
 
     def Predict(self, request, context):
+        print(f"[Worker] Received Prediction request for model {request.model_id}")
 
-        print(f"[Worker] Received prediction request for model {request.model_id}.")
+        # Find path
+        filename = f"model_{request.model_id}.joblib"
+        model_path = os.path.join("models/", filename)
 
-        #fake prediction
-        #here I should call model.predict_with_model
-        return worker_pb2.PredictResponse(value=0.0)
+        try:
+            # Send raw feature list to model
+            result = model.load_and_predict(
+                model_path=model_path,
+                features=list(request.features)
+            )
 
+            return worker_pb2.PredictResponse(prediction=result)
+
+        except FileNotFoundError:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details("[Worker] Model not found.")
+            return worker_pb2.PredictResponse()
+        except Exception as e:
+            print(f"[Error Predict] {e}")
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(e))
+            return worker_pb2.PredictResponse()
 
     def Health(self, request, context):
 
-        # Helath check: master wants to know if worker is active
+        # Health check: master wants to know if worker is active
         print("[Worker] Health check received.")
         return worker_pb2.HealthResponse(healthy=True)
 
