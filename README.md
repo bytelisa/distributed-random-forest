@@ -88,3 +88,13 @@ python cmd/worker/worker_main.py
 ```bash
 go run cmd/master/master_main.go
 ```
+
+## 8. Send an example training request
+```bash
+curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"data/iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
+```
+
+## 8. Send an example predict request
+```bash
+curl.exe -X POST http://localhost:8080/predict/test-model-iris -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2]}'
+```

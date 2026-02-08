@@ -30,7 +30,6 @@ def load_dataset(dataset_path: str) -> pd.DataFrame:
 
     try:
         df = pd.read_csv(dataset_path)
-        # --- CLEAN HEADERS IMMEDIATELY ---
         # Remove quotes and spaces from column names to avoid "Column not found" errors
         df.columns = df.columns.str.replace("'", "").str.replace('"', '').str.strip()
 
@@ -65,17 +64,17 @@ def train_model(data: pd.DataFrame, target_column: str, model_type: str, n_estim
     # This automatically drops 'ocean_proximity' or other string features from X.
     X_numeric = X.select_dtypes(include=[np.number])
 
-    # Check if we lost all columns
+    # Check if we we still have columns to work with
     if X_numeric.shape[1] == 0:
         raise ModelError("Error: No numeric features remained after preprocessing.")
 
     # 5. HANDLE MISSING VALUES (NaN)
-    # Simple strategy: fill with 0. Necessary for housing.csv (total_bedrooms often has NaNs)
+    # Quick fix: fill with 0. Necessary for housing.csv
     X_numeric = X_numeric.fillna(0)
 
     print(f"[Model] Training on features: {X_numeric.columns.tolist()}")
 
-# todo choose better initialization
+    # todo choose better initialization
     # 6. MODEL INITIALIZATION
     if model_type == 'classifier':
         model = RandomForestClassifier(n_estimators=n_estimators, random_state=42, n_jobs=1)
@@ -91,6 +90,7 @@ def train_model(data: pd.DataFrame, target_column: str, model_type: str, n_estim
         return model
     except Exception as e:
         raise ModelError(f"Scikit-learn training failed: {e}")
+
 
 def load_and_predict(model_path: str, features: list) -> str:
     """

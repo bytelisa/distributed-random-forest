@@ -33,6 +33,13 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	}
 	client := pb.NewWorkerClient(conn)
 
+	// Set Gin mode based on the environment specified in the config file.
+	if cfg.App.Env == "prod" {
+		gin.SetMode(gin.ReleaseMode)
+	} else {
+		gin.SetMode(gin.DebugMode)
+	}
+
 	// 2. Setup Router
 	router := gin.Default()
 
