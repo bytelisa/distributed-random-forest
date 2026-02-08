@@ -35,6 +35,8 @@ message TrainRequest {
   // RandomForest hyperparameters
   int32 n_estimators = 4;
   int32 max_depht = 5;
+
+  string target_column = 6;
 }
 
 message TrainResponse {
@@ -51,9 +53,7 @@ message PredictRequest {
 
 message PredictResponse {
   //for now the worker returns th aggregated prediction. todo check this
-  repeated float predictions = 1;
-  float value = 2;
-
+  string prediction = 1;
 }
 
 message HealthRequest {}
