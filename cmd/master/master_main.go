@@ -1,4 +1,3 @@
-// cmd/master/main.go
 package main
 
 import (
@@ -10,23 +9,23 @@ import (
 )
 
 func main() {
-	// Load Configuration file
+	// Upload config (server port, worker address, s3 creds...)
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		log.Fatalf("[Master] Failed to load config: %v", err)
 	}
 
-	// Initialize REST Server
+	// Initialize REST server (he'll open the grpc connection to the workers)
 	server, err := api.NewServer(cfg)
 	if err != nil {
-		log.Fatalf("Failed to create server: %v", err)
+		log.Fatalf("[Master] Failed to create server: %v", err)
 	}
 
-	// Start Server
+	// Run Server and wait for requests
 	serverAddr := fmt.Sprintf(":%d", cfg.Server.Port)
-	fmt.Printf("[Master] REST API listening on %s\n", serverAddr)
+	fmt.Printf("[Master] REST API listening on %s... (Waiting for requests)\n", serverAddr)
 
 	if err := server.Start(serverAddr); err != nil {
-		log.Fatalf("Server failed: %v", err)
+		log.Fatalf("[Master] Server failed: %v", err)
 	}
 }

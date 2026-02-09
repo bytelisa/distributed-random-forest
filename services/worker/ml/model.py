@@ -38,7 +38,7 @@ def load_dataset(dataset_path: str) -> pd.DataFrame:
     except Exception as e:
         raise ModelError(f"[Model] Could not load dataset from {dataset_path}: {e}")
 
-def train_model(data: pd.DataFrame, target_column: str, model_type: str, n_estimators: int) -> Union[RandomForestClassifier, RandomForestRegressor]:
+def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estimators: int) -> Union[RandomForestClassifier, RandomForestRegressor]:
     """
     Trains a RandomForest model.
     """
@@ -76,12 +76,12 @@ def train_model(data: pd.DataFrame, target_column: str, model_type: str, n_estim
 
     # todo choose better initialization
     # 6. MODEL INITIALIZATION
-    if model_type == 'classifier':
+    if task_type == 'classification':
         model = RandomForestClassifier(n_estimators=n_estimators, random_state=42, n_jobs=1)
-    elif model_type == 'regressor':
+    elif task_type == 'regression':
         model = RandomForestRegressor(n_estimators=n_estimators, random_state=42, n_jobs=1)
     else:
-        raise ModelError(f"Invalid model_type '{model_type}'. Choose 'classifier' or 'regressor'.")
+        raise ModelError(f"Invalid task type '{task_type}'. Choose 'classification' or 'regression'.")
 
     # 7. TRAIN
     try:

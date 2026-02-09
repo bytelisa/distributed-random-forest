@@ -1,0 +1,15 @@
+
+services:
+  minio:
+    image: minio/minio
+    container_name: drf-minio
+    ports:
+      - "9000:9000" # API Port
+      - "9001:9001" # Web Console Port
+    environment:
+      MINIO_ROOT_USER: "minioadmin"      # Come la Access Key di AWS
+      MINIO_ROOT_PASSWORD: "minioadmin"  # Come la Secret Key di AWS
+    command: server /data --console-address ":9001"
+    volumes:
+      - ./minio_data:/data # Persistenza dei dati locale
+

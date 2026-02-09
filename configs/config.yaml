@@ -3,21 +3,22 @@
 # CONFIGURATION FILE
 
 app:
-  env: "dev" # dev, prod
+  env: "dev"
 
 server:
-  port: 8080 # Port from which Master listens to REST requests
+  port: 8080
 
 workers:
   addresses:
     - "localhost:50051"
-    # todo add more workers
 
 storage:
-  type: "local" # "local" or "s3"
-  base_path: "data/" # Directory for data
-  # s3_bucket: "my-bucket" #
-  # s3_region: "us-east-1" #
+  type: "s3"
+  endpoint: "http://localhost:9000"     # URL MinIO/AWS
+  access_key: "minioadmin"              # Credentials
+  secret_key: "minioadmin"
+  bucket: "example-storage"                 # Name of the shared storage
+  local_temp_dir: "worker_temp_data"    # Temp dir for worker
 
 # Task Configuration
 tasks:
