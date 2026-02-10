@@ -81,7 +81,7 @@ python -m grpc_tools.protoc -I. --python_out=. --grpc_python_out=. api/proto/wor
 
 ## 6. Launch a Worker
 ```bash
-python cmd/worker/worker_main.py
+python cmd/worker/worker_main.py --port 50051
 ```
 
 ## 7. Launch the Master
@@ -97,6 +97,7 @@ curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json"
 ## 9. Send an example predict request
 ```bash
 curl.exe -X POST http://localhost:8080/predict/test-model-iris -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2]}'
+curl.exe -X POST http://localhost:8080/predict/b6d09e79-b286-4e4d-b978-efe872fda83c -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2]}'
 ```
 
 

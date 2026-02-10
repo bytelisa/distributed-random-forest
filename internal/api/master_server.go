@@ -1,7 +1,5 @@
 package api
 
-// Master Server: receives and handles HTTP requests coming from users
-
 import (
 	"context"
 	"fmt"
@@ -10,34 +8,25 @@ import (
 
 	pb "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1"
 	"github.com/bytelisa/distributed-random-forest/internal/config"
+	"github.com/bytelisa/distributed-random-forest/internal/orchestrator" // Assicurati che l'import sia corretto
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
-// Server holds the dependencies for the HTTP handlers
+// Server holds the dependencies
 type Server struct {
 	router     *gin.Engine
 	config     *config.Config
-	grpcClient pb.WorkerClient // this will later become a pool of clients
+	workerPool *orchestrator.WorkerPool // Usiamo il Pool, non più il singolo grpcClient
 }
 
 // NewServer initializes the REST API server
 func NewServer(cfg *config.Config) (*Server, error) {
-	// 1. Initialize gRPC connection
-	workerAddr := cfg.Workers.Addresses[0]
-	conn, err := grpc.NewClient(workerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// 1. Initialize Worker Pool (QUESTA È LA PARTE CHE MANCAVA O ERA VECCHIA)
+	// Questo chiamerà la funzione in pool.go che stampa "[Orchestrator] Connected..."
+	pool, err := orchestrator.NewWorkerPool(cfg.Workers.Addresses)
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to worker: %w", err)
-	}
-	client := pb.NewWorkerClient(conn)
-
-	// Set Gin mode based on the environment specified in the config file.
-	if cfg.App.Env == "prod" {
-		gin.SetMode(gin.ReleaseMode)
-	} else {
-		gin.SetMode(gin.DebugMode)
+		return nil, fmt.Errorf("failed to initialize worker pool: %w", err)
 	}
 
 	// 2. Setup Router
@@ -46,10 +35,10 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	s := &Server{
 		router:     router,
 		config:     cfg,
-		grpcClient: client,
+		workerPool: pool,
 	}
 
-	// 3. Define Routes
+	// Routes
 	router.POST("/train", s.handleTrain)
 	router.POST("/predict/:model_id", s.handlePredict)
 
@@ -61,19 +50,15 @@ func (s *Server) Start(addr string) error {
 	return s.router.Run(addr)
 }
 
-// handleTrain processes the training request
 func (s *Server) handleTrain(c *gin.Context) {
 	var req TrainRequest
-	// Bind JSON body to struct
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	// Generate a unique Model ID
 	modelID := uuid.New().String()
 
-	// Map generic task type string to Protobuf enum
 	var pbTaskType pb.TaskType
 	switch req.TaskType {
 	case "classification":
@@ -85,7 +70,6 @@ func (s *Server) handleTrain(c *gin.Context) {
 		return
 	}
 
-	// Prepare gRPC request
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -97,32 +81,28 @@ func (s *Server) handleTrain(c *gin.Context) {
 		NEstimators:  int32(req.NEstimators),
 	}
 
-	// Call Worker via gRPC (Blocking call)
-	grpcResp, err := s.grpcClient.Train(ctx, grpcReq)
+	// UPDATE: Call Distributed Training
+	orchestratorResp, err := s.workerPool.TrainDistributed(ctx, grpcReq)
+
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Worker training failed: " + err.Error()})
+		// System error (e.g. no workers)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	// UPDATE: Check success from worker response
-	status := "completed"
-	if !grpcResp.Success {
-		status = "failed"
-		// If worker explicitly says success=false, we might want to return 500 or 400
-		c.JSON(http.StatusInternalServerError, gin.H{"error": grpcResp.Message})
+	if !orchestratorResp.Success {
+		// Logic error (one worker failed)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": orchestratorResp.Message})
 		return
 	}
 
-	fmt.Printf("[Master] Training status: %s\n", status)
-	// UPDATE: Return 200 OK with the actual message from the worker
 	c.JSON(http.StatusOK, TrainResponse{
 		ModelID: modelID,
-		Status:  status,
-		Message: grpcResp.Message, // <--- This now comes from the Python Worker!
+		Status:  "completed",
+		Message: orchestratorResp.Message,
 	})
 }
 
-// handlePredict processes the inference request
 func (s *Server) handlePredict(c *gin.Context) {
 	modelID := c.Param("model_id")
 
@@ -132,7 +112,6 @@ func (s *Server) handlePredict(c *gin.Context) {
 		return
 	}
 
-	// Call Worker via gRPC
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -141,7 +120,15 @@ func (s *Server) handlePredict(c *gin.Context) {
 		Features: req.Features,
 	}
 
-	resp, err := s.grpcClient.Predict(ctx, grpcReq)
+	// --- TEMPORANEO: usa solo il primo worker ---
+	if len(s.workerPool.Workers) == 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "No workers available"})
+		return
+	}
+	worker := s.workerPool.Workers[0]
+	// -----------------------------------------------
+
+	resp, err := worker.Client.Predict(ctx, grpcReq)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Inference failed: " + err.Error()})
 		return

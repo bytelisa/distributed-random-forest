@@ -6,6 +6,7 @@ from api.proto.worker.v1 import worker_pb2_grpc
 from services.worker.ml import model as ml_model
 from services.worker.platform.storage import StorageManager
 from services.worker.config import load_config
+import uuid
 
 # Note: all functions take and return objects defined in the two generated _pb2.py files,
 # which implement the interface worker.proto in python.
@@ -14,17 +15,18 @@ from services.worker.config import load_config
 LOCAL_TEMP_DIR = "temp_worker_data"
 
 class WorkerService(worker_pb2_grpc.WorkerServicer):
-    def __init__(self):
+    def __init__(self, worker_id):
         # Load config
         self.cfg = load_config()
 
         # Initialize storage manager
         self.storage = StorageManager(self.cfg)
 
-        # Use temp dir defined in yaml
-        self.local_temp_dir = self.cfg.local_temp_dir
+        base_temp_dir = self.cfg.local_temp_dir
+        self.local_temp_dir = os.path.join(base_temp_dir, str(worker_id))
+
         os.makedirs(self.local_temp_dir, exist_ok=True)
-        print(f"[Worker] Initialized with temp dir: {self.local_temp_dir}")
+        print(f"[Worker {worker_id}] Initialized with isolated temp dir: {self.local_temp_dir}")
 
     def _convert_type(self, task_type_enum):
         # convert enum
@@ -57,17 +59,21 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
             )
 
             # Save model locally
-            model_filename = f"{request.model_id}.joblib"
-            local_model_path = os.path.join(self.local_temp_dir, model_filename) # Usa config
+
+            # unique suffix for this worker
+            part_id = str(uuid.uuid4())
+            model_filename = f"part_{part_id}.joblib"
+            local_model_path = os.path.join(self.local_temp_dir, model_filename)
             ml_model.save_model(trained_model, local_model_path)
 
             # Upload to S3
-            s3_model_key = f"models/{model_filename}"
+            #request's model id is now a directory where all workers upload their models
+            s3_model_key = f"models/{request.model_id}/{model_filename}"
             self.storage.upload_file(local_model_path, s3_model_key)
 
             return worker_pb2.TrainResponse(
                 success=True,
-                message=f"Training completed. Saved to s3://{self.cfg.storage_bucket}/{s3_model_key}"
+                message=f"Training part completed. Saved to s3://{self.cfg.storage_bucket}/{s3_model_key}"
             )
 
         except Exception as e:

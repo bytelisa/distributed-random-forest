@@ -10,26 +10,26 @@ server:
 
 workers:
   addresses:
-    - "localhost:50051"
-
+    - "localhost:50051"   # Worker 1
+    - "localhost:50052"   # Worker 2
 storage:
   type: "s3"
   endpoint: "http://localhost:9000"     # URL MinIO/AWS
   access_key: "minioadmin"              # Credentials
   secret_key: "minioadmin"
-  bucket: "example-storage"                 # Name of the shared storage
-  local_temp_dir: "worker_temp_data"    # Temp dir for worker
+  bucket: "example-storage"             # Name of the shared storage
+  local_temp_dir: "worker_temp_data"    # Temp dir for workers (each Worker is identified using its port)
 
 # Task Configuration
 tasks:
   - name: "iris-classification"
-    type: "classification" # deve coincidere con l'enum (o stringa convertibile)
+    type: "classification"
     dataset_path: "data/iris.csv"
     target_column: "Species"
     hyperparameters:
       n_estimators: 10
       max_depth: 5
-    # Dati di test per la verifica rapida (opzionale ma comodo)
+    # Quick test for prediction
     test_features: [5.0, 3.6, 1.4, 0.2]
 
   - name: "housing-regression"
@@ -39,4 +39,5 @@ tasks:
     hyperparameters:
       n_estimators: 15
       max_depth: 10
+    # Quick test for prediction
     test_features: [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.3252]
