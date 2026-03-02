@@ -12,44 +12,44 @@
 
 ```text
 distributed-random-forest/
-├── api/                     # Definizioni delle API (Protobuf)
+├── api/                     # API definitions (Protobuf)
 │   └── proto/
 │       └── worker/
 │           └── v1/
-│               └── worker.proto   # Definizione del servizio gRPC per i worker
+│               └── worker.proto   # Interface of the gRPC services of the worker
 │
-├── cmd/                     # Entrypoint delle applicazioni (eseguibili)
-│   ├── master/              # Codice per l'eseguibile del Master
+├── cmd/                     # Application entrypoints (exe)
+│   ├── master/              # Master main
 │   │   └── main.go
-│   └── worker/              # Codice per l'eseguibile del Worker
+│   └── worker/              # Worker main
 │       └── main.py
 │
-├── internal/                # Codice Go privato del Master (non esportabile)
-│   ├── api/                 # Handler per le API REST
-│   ├── config/              # Gestione della configurazione
-│   ├── orchestrator/        # Logica di orchestrazione dei worker
-│   └── platform/            # Interfacce verso servizi esterni (es. S3, gRPC client)
+├── internal/                # Private Go code of the Master 
+│   ├── api/                 # REST API handler
+│   ├── config/              # Configuration management
+│   ├── orchestrator/        # Worker Orchestration logic
+│   └── platform/            # Interfaces to external services (eg. S3, gRPC client)
 │
 │
-├── services/                # Codice Python per i servizi (in questo caso, il worker)
+├── services/                # Python code of the workers
 │   └── worker/
-│       ├── ml/              # Logica di Machine Learning
-│       │   ├── model.py     # Classe/funzioni per addestrare/predire
-│       │   └── preprocessor.py # (Opzionale) Preprocessing dati
-│       └── server.py        # Implementazione del server gRPC del worker
+│       ├── ml/              # Machine Learning logic
+│       │   ├── model.py     # ML model: training and inference functions
+│       │   └── preprocessor.py # (Later) Data preprocessing 
+│       └── server.py        # Implementation of the gRPC server of the Worker
 │
 ├── configs/                 # File di configurazione (es. config.yaml)
 │
-├── deployments/             # Manifesti per il deployment
-│   └── docker-compose.yml   # Per l'ambiente locale
+├── deployments/             # Deployment
+│   └── docker-compose.yml   # Local deployment
 │
-├── scripts/                 # Script di utilità (es. build.sh, run.sh)
+├── scripts/                 # Utility scripts (eg. build.sh, run.sh)
 │
-├── Dockerfile.master        # Dockerfile per il Master Go
-├── Dockerfile.worker        # Dockerfile per il Worker Python
-├── go.mod                   # Gestione dipendenze Go
+├── Dockerfile.master        # Dockerfile for the Go Master
+├── Dockerfile.worker        # Dockerfile for the Python Worker
+├── go.mod                   # Go dependencies
 ├── go.sum
-├── requirements.txt         # Gestione dipendenze Python
+├── requirements.txt         # Python dependencies
 └── README.md
 ```
 ## 1. Create `go.mod`
