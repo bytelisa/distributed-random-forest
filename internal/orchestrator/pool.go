@@ -1,16 +1,17 @@
 package orchestrator
 
-// Package orchestrator allows for an Orchestration Approach
+// Package orchestrator allows for an Orchestration Approach (centralized approach)
 // Master uses Orchestrator to manage and coordinate a pool of Workers
 
 import (
 	"context"
 	"fmt"
+	"log"
+	"sync"
+
 	pb "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"log"
-	"sync"
 )
 
 // WorkerClient wraps the gRPC client and the connection
@@ -80,7 +81,7 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest)
 
 	// 2. Launch parallel requests
 	for i, worker := range p.Workers {
-		wg.Add(1)
+		wg.Add(1) // add 1 task to the wait group (when the wait group gets to 0 all blocked goroutines are released)
 
 		// Calculate specific tree count for this worker
 		treesForThisWorker := baseTrees

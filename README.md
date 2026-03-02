@@ -89,6 +89,12 @@ python cmd/worker/worker_main.py --port 50051
 go run cmd/master/master_main.go
 ```
 
+## TEMPORARY: MINIO instead of S3
+```bash
+docker-compose -f deployments/docker-compose.yml up -d
+http://localhost:9001
+```
+
 ## 8. Send an example training request
 ```bash
 curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
@@ -101,8 +107,3 @@ curl.exe -X POST http://localhost:8080/predict/b6d09e79-b286-4e4d-b978-efe872fda
 ```
 
 
-## TEMP MINIO
-```bash
-docker-compose -f deployments/docker-compose.yml up -d
-http://localhost:9001
-```

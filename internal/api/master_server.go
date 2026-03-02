@@ -17,13 +17,12 @@ import (
 type Server struct {
 	router     *gin.Engine
 	config     *config.Config
-	workerPool *orchestrator.WorkerPool // Usiamo il Pool, non più il singolo grpcClient
+	workerPool *orchestrator.WorkerPool // Uses a pool of workers
 }
 
 // NewServer initializes the REST API server
 func NewServer(cfg *config.Config) (*Server, error) {
-	// 1. Initialize Worker Pool (QUESTA È LA PARTE CHE MANCAVA O ERA VECCHIA)
-	// Questo chiamerà la funzione in pool.go che stampa "[Orchestrator] Connected..."
+	// 1. Initialize Worker Pool
 	pool, err := orchestrator.NewWorkerPool(cfg.Workers.Addresses)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize worker pool: %w", err)
