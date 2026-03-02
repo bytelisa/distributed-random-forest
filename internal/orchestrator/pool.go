@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"sync"
 
 	pb "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1"
@@ -144,6 +145,123 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest)
 		Success: true,
 		Message: fmt.Sprintf("Distributed training completed on %d workers.", numWorkers),
 	}, nil
+}
+
+// TODO fix this
+// Call Predict goroutines on the (correct!) workers
+// Note: should make sure that we ask to predict to the workers who actually trained the model?
+//Or maybe it's not relevant because the trained model is available on shared storage so any worker can use any part to contribute to the prediction?
+
+// PredictDistributed is responsible for the aggregation of inference results coming from the workers (Bagging - Aggregation Phase)
+// taskType should be "classification" or "regression"
+func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequest, taskType string) (string, error) {
+	numWorkers := len(p.Workers)
+	if numWorkers == 0 {
+		return "", fmt.Errorf("no workers available for inference")
+	}
+
+	// Channel to collect results from workers
+	// We use a buffered channel to avoid blocking
+	resultsChan := make(chan string, numWorkers)
+
+	// WaitGroup to synchronize goroutines
+	var wg sync.WaitGroup
+
+	log.Printf("[Orchestrator] Broadcasting prediction request to %d workers...", numWorkers)
+
+	// 1. BROADCAST: Ask ALL workers to predict
+	for _, worker := range p.Workers {
+		wg.Add(1)
+		go func(w *WorkerClient) {
+			defer wg.Done()
+
+			// Call gRPC Predict
+			resp, err := w.Client.Predict(ctx, req)
+			if err != nil {
+				// We log the error but don't stop the whole process.
+				// This is basic Fault Tolerance: if one worker is down, others might answer.
+				log.Printf("[Orchestrator] Warning: Worker %s failed predict: %v", w.Address, err)
+				return
+			}
+
+			// If the worker returned a valid prediction, send it to channel
+			if resp.Prediction != "" {
+				resultsChan <- resp.Prediction
+			}
+		}(worker)
+	}
+
+	// Close channel once all goroutines are done
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
+
+	// 2. COLLECT: Gather all partial results
+	var results []string
+	for r := range resultsChan {
+		results = append(results, r)
+	}
+
+	if len(results) == 0 {
+		return "", fmt.Errorf("prediction failed: no workers returned a valid result")
+	}
+
+	log.Printf("[Orchestrator] Collected %d partial predictions. Aggregating...", len(results))
+
+	// 3. AGGREGATE (Reduce Phase)
+	if taskType == "regression" {
+		return aggregateRegression(results), nil
+	} else {
+		// Default to classification (Majority Vote)
+		return aggregateClassification(results), nil
+	}
+}
+
+// --- Aggregation Strategies ---
+
+// aggregateRegression calculates the mean of the results
+func aggregateRegression(results []string) string {
+	var sum float64
+	count := 0
+
+	for _, r := range results {
+		val, err := strconv.ParseFloat(r, 64)
+		if err == nil {
+			sum += val
+			count++
+		} else {
+			log.Printf("[Orchestrator] Error parsing float result: %s", r)
+		}
+	}
+
+	if count == 0 {
+		return "0"
+	}
+
+	mean := sum / float64(count)
+	return fmt.Sprintf("%f", mean)
+}
+
+// aggregateClassification calculates the mode (majority vote)
+func aggregateClassification(results []string) string {
+	counts := make(map[string]int)
+
+	for _, r := range results {
+		counts[r]++
+	}
+
+	var bestVal string
+	maxCount := -1
+
+	for val, c := range counts {
+		if c > maxCount {
+			maxCount = c
+			bestVal = val
+		}
+	}
+
+	return bestVal
 }
 
 // Close closes all connections

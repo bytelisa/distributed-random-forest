@@ -60,7 +60,7 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
             # Save model locally
 
-            # unique suffix for this worker
+            # unique suffix for this worker (necessary to not overwrite models of other workers)
             part_id = str(uuid.uuid4())
             model_filename = f"part_{part_id}.joblib"
             local_model_path = os.path.join(self.local_temp_dir, model_filename)
@@ -84,22 +84,47 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
         print(f"[Worker] Predict request for model {request.model_id}")
 
         try:
-            # DOWNLOAD MODEL FROM S3
-            model_filename = f"{request.model_id}.joblib"
-            local_model_path = os.path.join(self.local_temp_dir, model_filename)
-            s3_model_key = f"models/{model_filename}"
+            # 1. PREPARE DIRECTORIES
+            # We use a specific folder for this model inside the worker's temp dir
+            local_model_dir = os.path.join(self.local_temp_dir, request.model_id)
+            os.makedirs(local_model_dir, exist_ok=True)
 
-            # Only download if we don't have it (caching optimization for later)
-            # For now, let's always download to be safe (stateless)
-            self.storage.download_file(s3_model_key, local_model_path)
+            # 2. LIST AND DOWNLOAD FROM S3
+            s3_prefix = f"models/{request.model_id}/"
+            s3_keys = self.storage.list_files(s3_prefix)
 
-            # PREDICT
-            result_string = ml_model.load_and_predict(
-                model_path=local_model_path,
-                features=list(request.features)
-            )
+            if not s3_keys:
+                print(f"[Worker] No model files found on S3 for {request.model_id}")
+                # Return empty to signal "I don't have this model"
+                return worker_pb2.PredictResponse(prediction="")
 
-            return worker_pb2.PredictResponse(prediction=result_string)
+            predictions = []
+
+            for s3_key in s3_keys:
+                # Extract filename (e.g., part_uuid.joblib)
+                filename = os.path.basename(s3_key)
+                local_path = os.path.join(local_model_dir, filename)
+
+                # Download only if not exists (caching strategy) or always overwrite
+                # For safety in distributed env, we download.
+                self.storage.download_file(s3_key, local_path)
+
+                # 3. PREDICT ON SINGLE TREE/FOREST PART
+                # Returns a string (e.g. "setosa" or "150.5")
+                pred_str = ml_model.load_and_predict(
+                    model_path=local_path,
+                    features=list(request.features)
+                )
+                predictions.append(pred_str)
+
+            # 4. LOCAL AGGREGATION
+            if not predictions:
+                return worker_pb2.PredictResponse(prediction="")
+
+            final_prediction = self._aggregate_predictions(predictions)
+
+            print(f"[Worker] Local aggregation of {len(predictions)} parts: {final_prediction}")
+            return worker_pb2.PredictResponse(prediction=final_prediction)
 
         except Exception as e:
             print(f"[Error Predict] {e}")

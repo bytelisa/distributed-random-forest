@@ -98,12 +98,12 @@ http://localhost:9001
 ## 8. Send an example training request
 ```bash
 curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
+curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
 ``````
 
 ## 9. Send an example predict request
 ```bash
-curl.exe -X POST http://localhost:8080/predict/test-model-iris -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2]}'
-curl.exe -X POST http://localhost:8080/predict/b6d09e79-b286-4e4d-b978-efe872fda83c -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2]}'
+curl.exe -X POST http://localhost:8080/predict/a9dac953-79de-4eae-9002-bb54aac5d46b -H "Content-Type: application/json" -d '{\"features\": [5.1, 3.5, 1.4, 0.2]}'
 ```
 
 

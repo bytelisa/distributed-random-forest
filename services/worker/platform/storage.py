@@ -18,6 +18,27 @@ class StorageManager:
             aws_secret_access_key=cfg.storage_secret_key
         )
 
+    def list_files(self, prefix: str):
+        """
+        Lists all object keys in the bucket starting with the given prefix.
+        Necessary to download all parts (trees) of a model (forest).
+        """
+        try:
+            # list_objects_v2 is the standard way to list files
+            response = self.s3_client.list_objects_v2(
+                Bucket=self.bucket_name,
+                Prefix=prefix
+            )
+
+            # 'Contents' contains the list of files. If empty, return empty list.
+            if 'Contents' not in response:
+                return []
+
+            return [obj['Key'] for obj in response['Contents']]
+
+        except Exception as e:
+            raise Exception(f"Failed to list files from S3 with prefix {prefix}: {e}")
+
     def download_file(self, s3_url: str, local_path: str):
         """
         Downloads a file from S3 to a local path.

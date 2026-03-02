@@ -86,7 +86,7 @@ def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estima
     # 7. TRAIN
     try:
         model.fit(X_numeric, y)
-        print("[Model] Training completed successfully.")
+        print(f"[Model] Training completed successfully on {n_estimators} trees.")
         return model
     except Exception as e:
         raise ModelError(f"Scikit-learn training failed: {e}")
