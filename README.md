@@ -64,7 +64,7 @@ go mod tidy
 .\venv\Scripts\activate
 ```
 
-## 3. Update/install the necessary Python libs
+## 3. Update/install Python requirements
 ```bash
 pip install grpcio grpcio-tools protobuf scikit-learn pandas numpy
 ```
