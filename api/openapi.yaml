@@ -99,16 +99,19 @@ paths:
             application/json:
               schema:
                 type: object
-                # accepts a generic JSON object
-                # validation happens at runtime
-                additionalProperties: true
-                example:
-                  {
-                    "sepal_length": 5.1,
-                    "sepal_width": 3.5,
-                    "petal_length": 1.4,
-                    "petal_width": 0.2
-                  }
+                properties:
+                  features:
+                    type: array
+                    items:
+                      type: number
+                    description: Array of feature values
+                  task_type:
+                    type: string
+                    enum: [ classification, regression ]
+                    description: The type of the model (must match training task type)
+                required:
+                  - features
+                  - task_type
         responses:
           '200':
             description: Prediction result.

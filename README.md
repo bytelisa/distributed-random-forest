@@ -20,9 +20,9 @@ distributed-random-forest/
 │
 ├── cmd/                     # Application entrypoints (exe)
 │   ├── master/              # Master main
-│   │   └── main.go
+│   │   └── master_main.go
 │   └── worker/              # Worker main
-│       └── main.py
+│       └── worker_main.py
 │
 ├── internal/                # Private Go code of the Master 
 │   ├── api/                 # REST API handler
@@ -92,18 +92,29 @@ go run cmd/master/master_main.go
 ## TEMPORARY: MINIO instead of S3
 ```bash
 docker-compose -f deployments/docker-compose.yml up -d
+```
+Manage models on this link:
+```bash
 http://localhost:9001
 ```
 
 ## 8. Send an example training request
 ```bash
 curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
+``````
+```bash
 curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
 ``````
 
 ## 9. Send an example predict request
 ```bash
-curl.exe -X POST http://localhost:8080/predict/a9dac953-79de-4eae-9002-bb54aac5d46b -H "Content-Type: application/json" -d '{\"features\": [5.1, 3.5, 1.4, 0.2]}'
-```
+curl.exe -X POST http://localhost:8080/predict/705543a9-6601-4de5-92b4-f363b9768335 -H "Content-Type: application/json" -d "{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}"
+``````
 
+```bash
+curl -X POST http://localhost:8080/predict/INSERISCI_UUID_QUI  -H "Content-Type: application/json"  -d '{"features": [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.32], "task_type": "regression"}'
+``````
+
+curl.exe -X POST http://localhost:8080/predict/test-model-iris -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": "classification"}'
+curl.exe -X POST http://localhost:8080/predict/705543a9-6601-4de5-92b4-f363b9768335 -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
 

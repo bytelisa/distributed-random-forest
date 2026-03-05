@@ -14,7 +14,7 @@ workers:
     - "localhost:50052"   # Worker 2
 storage:
   type: "s3"
-  endpoint: "http://localhost:9000"     # URL MinIO/AWS
+  endpoint: "http://localhost:9000"     # URL MinIO/AWS (TEMPORARY)
   access_key: "minioadmin"              # Credentials
   secret_key: "minioadmin"
   bucket: "example-storage"             # Name of the shared storage

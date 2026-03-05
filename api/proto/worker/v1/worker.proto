@@ -46,14 +46,16 @@ message TrainResponse {
 
 message PredictRequest {
   string model_id = 1;
-  //serialized data (float array for now so it's easier) todo check this
   repeated float features = 2;
 
+  // fields necessary to partition trained trees between the workers
+  int32 worker_index = 3;  // Indice del worker (0, 1, 2...)
+  int32 total_workers = 4; // Totale worker attivi
 }
 
 message PredictResponse {
-  //for now the worker returns th aggregated prediction. todo check this
-  string prediction = 1;
+  // Changed from single string to repeated to allow master-side global aggregation
+  repeated string predictions = 1;
 }
 
 message HealthRequest {}

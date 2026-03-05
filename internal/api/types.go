@@ -25,6 +25,7 @@ type PredictRequest struct {
 	// or we can parse a generic map if needed later.
 	// Matching the gRPC logic:
 	Features []float32 `json:"features" binding:"required"`
+	TaskType string    `json:"task_type" binding:"required,oneof=classification regression"`
 }
 
 // PredictResponse represents the JSON response for POST /predict

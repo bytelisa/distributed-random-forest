@@ -82,49 +82,63 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
     def Predict(self, request, context):
         print(f"[Worker] Predict request for model {request.model_id}")
+        print(f"         I am worker {request.worker_index} of {request.total_workers}")
+
+        # Note: stateless behaviour
+        # -> when prediction is asked, workers download trees from shared storage. No internal worker state.
 
         try:
-            # 1. PREPARE DIRECTORIES
-            # We use a specific folder for this model inside the worker's temp dir
-            local_model_dir = os.path.join(self.local_temp_dir, request.model_id)
-            os.makedirs(local_model_dir, exist_ok=True)
-
-            # 2. LIST AND DOWNLOAD FROM S3
+            # 1. LIST FILES FROM S3
             s3_prefix = f"models/{request.model_id}/"
             s3_keys = self.storage.list_files(s3_prefix)
 
             if not s3_keys:
-                print(f"[Worker] No model files found on S3 for {request.model_id}")
-                # Return empty to signal "I don't have this model"
+                # No file found
                 return worker_pb2.PredictResponse(prediction="")
 
-            predictions = []
+            if request.total_workers <= 0:
+                print(f"[Error Predict] Invalid total_workers: {request.total_workers}")
+                return worker_pb2.PredictResponse(prediction="") # O alza eccezione
 
-            for s3_key in s3_keys:
-                # Extract filename (e.g., part_uuid.joblib)
+            # 2. DETERMINISTIC PARTITIONING OF TRAINED TREES
+            # Order files to have consistent partitioning across all workers
+            s3_keys.sort()
+
+            # [ROUND ROBIN] Only select files that correspond to this worker's index based on modular algebra
+            # Example: 2 Workers.
+            # Worker 0 takes 0, 2, 4...
+            # Worker 1 takes 1, 3, 5...
+            my_files = [k for i, k in enumerate(s3_keys) if i % request.total_workers == request.worker_index]
+
+            if not my_files:
+                print(f"[Worker] No files assigned to me (found {len(s3_keys)} total).")
+                return worker_pb2.PredictResponse(prediction="")
+
+            print(f"[Worker] Assigned {len(my_files)} files out of {len(s3_keys)} total.")
+
+            # 3. DOWNLOAD & PREDICT
+            prediction_results = [] # List to store raw predictions
+
+            local_model_dir = os.path.join(self.local_temp_dir, request.model_id)
+            os.makedirs(local_model_dir, exist_ok=True)
+
+            for s3_key in my_files:
                 filename = os.path.basename(s3_key)
                 local_path = os.path.join(local_model_dir, filename)
 
-                # Download only if not exists (caching strategy) or always overwrite
-                # For safety in distributed env, we download.
                 self.storage.download_file(s3_key, local_path)
 
-                # 3. PREDICT ON SINGLE TREE/FOREST PART
-                # Returns a string (e.g. "setosa" or "150.5")
+                # Returns a single prediction (string) from one tree
                 pred_str = ml_model.load_and_predict(
                     model_path=local_path,
                     features=list(request.features)
                 )
-                predictions.append(pred_str)
+                prediction_results.append(pred_str)
 
-            # 4. LOCAL AGGREGATION
-            if not predictions:
-                return worker_pb2.PredictResponse(prediction="")
+            print(f"[Worker] Returning {len(prediction_results)} partial predictions.")
 
-            final_prediction = self._aggregate_predictions(predictions)
-
-            print(f"[Worker] Local aggregation of {len(predictions)} parts: {final_prediction}")
-            return worker_pb2.PredictResponse(prediction=final_prediction)
+            # 4. NO LOCAL AGGREGATION. Returns raw list (Master will aggregate).
+            return worker_pb2.PredictResponse(predictions=prediction_results)
 
         except Exception as e:
             print(f"[Error Predict] {e}")

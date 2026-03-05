@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -102,6 +103,7 @@ func (s *Server) handleTrain(c *gin.Context) {
 	})
 }
 
+// handlePredict handles prediction requests coming from the HTTP client
 func (s *Server) handlePredict(c *gin.Context) {
 	modelID := c.Param("model_id")
 
@@ -111,30 +113,28 @@ func (s *Server) handlePredict(c *gin.Context) {
 		return
 	}
 
+	// Timeout for inference
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	// Prepare base request
 	grpcReq := &pb.PredictRequest{
 		ModelId:  modelID,
 		Features: req.Features,
 	}
 
-	// --- TEMPORANEO: usa solo il primo worker ---
-	if len(s.workerPool.Workers) == 0 {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "No workers available"})
-		return
-	}
-	worker := s.workerPool.Workers[0]
-	// -----------------------------------------------
+	// Send request to Orchestrator
+	predictionResult, err := s.workerPool.PredictDistributed(ctx, grpcReq, req.TaskType)
 
-	resp, err := worker.Client.Predict(ctx, grpcReq)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Inference failed: " + err.Error()})
+		log.Printf("[Master] Inference error: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Distributed inference failed: " + err.Error()})
 		return
 	}
 
+	// Send response to Client
 	c.JSON(http.StatusOK, PredictResponse{
 		ModelID:    modelID,
-		Prediction: resp.Prediction,
+		Prediction: predictionResult,
 	})
 }

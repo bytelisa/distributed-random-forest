@@ -147,10 +147,13 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest)
 	}, nil
 }
 
-// TODO fix this
+// THOUGHTS:
 // Call Predict goroutines on the (correct!) workers
 // Note: should make sure that we ask to predict to the workers who actually trained the model?
-//Or maybe it's not relevant because the trained model is available on shared storage so any worker can use any part to contribute to the prediction?
+// Or maybe it's not relevant because the trained model is available on shared storage so any worker can use any part to contribute to the prediction?
+// YES: final decision went on stateless workers, so the model "parts" (trained trees) are partitioned between the workers who simply download them.
+// A worker can use trees he didn't train for inference purposes
+// This also solves (partly) fault tolerance --> no lost state (no cached trained trees)
 
 // PredictDistributed is responsible for the aggregation of inference results coming from the workers (Bagging - Aggregation Phase)
 // taskType should be "classification" or "regression"
@@ -160,61 +163,62 @@ func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequ
 		return "", fmt.Errorf("no workers available for inference")
 	}
 
-	// Channel to collect results from workers
-	// We use a buffered channel to avoid blocking
-	resultsChan := make(chan string, numWorkers)
-
-	// WaitGroup to synchronize goroutines
+	// Change channel type: now receives a slice of strings, not a single string
+	resultsChan := make(chan []string, numWorkers)
 	var wg sync.WaitGroup
 
 	log.Printf("[Orchestrator] Broadcasting prediction request to %d workers...", numWorkers)
 
-	// 1. BROADCAST: Ask ALL workers to predict
-	for _, worker := range p.Workers {
+	for i, worker := range p.Workers {
 		wg.Add(1)
-		go func(w *WorkerClient) {
+		go func(w *WorkerClient, idx int) {
 			defer wg.Done()
 
-			// Call gRPC Predict
-			resp, err := w.Client.Predict(ctx, req)
+			workerReq := &pb.PredictRequest{
+				ModelId:      req.ModelId,
+				Features:     req.Features,
+				WorkerIndex:  int32(idx),
+				TotalWorkers: int32(numWorkers),
+			}
+
+			resp, err := w.Client.Predict(ctx, workerReq)
 			if err != nil {
-				// We log the error but don't stop the whole process.
-				// This is basic Fault Tolerance: if one worker is down, others might answer.
 				log.Printf("[Orchestrator] Warning: Worker %s failed predict: %v", w.Address, err)
 				return
 			}
 
-			// If the worker returned a valid prediction, send it to channel
-			if resp.Prediction != "" {
-				resultsChan <- resp.Prediction
+			// Send the list of predictions (even if empty)
+			if len(resp.Predictions) > 0 {
+				resultsChan <- resp.Predictions
 			}
-		}(worker)
+		}(worker, i)
 	}
 
-	// Close channel once all goroutines are done
 	go func() {
 		wg.Wait()
 		close(resultsChan)
 	}()
 
-	// 2. COLLECT: Gather all partial results
-	var results []string
-	for r := range resultsChan {
-		results = append(results, r)
+	// 2. COLLECT & FLATTEN
+	// We merge all partial lists into one global list of votes/values
+	// Note: Only aggregate once (no local aggregation on worker) in order to introduce less error.
+	var globalPredictions []string
+
+	for partialList := range resultsChan {
+		globalPredictions = append(globalPredictions, partialList...)
 	}
 
-	if len(results) == 0 {
-		return "", fmt.Errorf("prediction failed: no workers returned a valid result")
+	if len(globalPredictions) == 0 {
+		return "", fmt.Errorf("prediction failed: no workers returned valid results")
 	}
 
-	log.Printf("[Orchestrator] Collected %d partial predictions. Aggregating...", len(results))
+	log.Printf("[Orchestrator] Collected %d total tree predictions. Aggregating globally...", len(globalPredictions))
 
-	// 3. AGGREGATE (Reduce Phase)
+	// 3. SINGLE GLOBAL AGGREGATION
 	if taskType == "regression" {
-		return aggregateRegression(results), nil
+		return aggregateRegression(globalPredictions), nil
 	} else {
-		// Default to classification (Majority Vote)
-		return aggregateClassification(results), nil
+		return aggregateClassification(globalPredictions), nil
 	}
 }
 
