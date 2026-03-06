@@ -9,6 +9,7 @@ import (
 	"log"
 	"strconv"
 	"sync"
+	"time"
 
 	pb "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1"
 	"google.golang.org/grpc"
@@ -58,8 +59,46 @@ func NewWorkerPool(addresses []string) (*WorkerPool, error) {
 	return pool, nil
 }
 
+// getHealthyWorkers returns a list of workers that are currently alive
+func (p *WorkerPool) getHealthyWorkers(ctx context.Context) ([]*WorkerClient, error) {
+
+	var healthyWorkers []*WorkerClient
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+
+	// Ping all workers in parallel
+	for _, w := range p.Workers {
+		wg.Add(1)
+		go func(worker *WorkerClient) {
+			defer wg.Done()
+
+			// Quick timeout for health check
+			shortCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+			defer cancel()
+
+			resp, err := worker.Client.Health(shortCtx, &pb.HealthRequest{})
+			if err == nil && resp.Healthy {
+				mu.Lock()
+				healthyWorkers = append(healthyWorkers, worker)
+				mu.Unlock()
+			} else {
+				log.Printf("[Orchestrator] Worker at %s is UNREACHABLE/UNHEALTHY.", worker.Address)
+			}
+		}(w)
+	}
+
+	wg.Wait()
+
+	if len(healthyWorkers) == 0 {
+		return nil, fmt.Errorf("critical: no healthy workers available")
+	}
+
+	return healthyWorkers, nil
+}
+
 // TrainDistributed splits the work among available workers and waits for completion
 func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest) (*pb.TrainResponse, error) {
+
 	numWorkers := len(p.Workers)
 	if numWorkers == 0 {
 		return nil, fmt.Errorf("no workers available for training")
@@ -158,18 +197,24 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest)
 // PredictDistributed is responsible for the aggregation of inference results coming from the workers (Bagging - Aggregation Phase)
 // taskType should be "classification" or "regression"
 func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequest, taskType string) (string, error) {
-	numWorkers := len(p.Workers)
-	if numWorkers == 0 {
-		return "", fmt.Errorf("no workers available for inference")
+
+	// DYNAMIC HEALTH CHECK
+	// Needed to compute the correct indices and distribute work accordingly
+	activeWorkers, err := p.getHealthyWorkers(ctx)
+	if err != nil {
+		return "", err
 	}
 
-	// Change channel type: now receives a slice of strings, not a single string
+	numWorkers := len(activeWorkers)
+	log.Printf("[Orchestrator] Active workers for inference: %d (configured: %d)", numWorkers, len(p.Workers))
+
 	resultsChan := make(chan []string, numWorkers)
 	var wg sync.WaitGroup
 
 	log.Printf("[Orchestrator] Broadcasting prediction request to %d workers...", numWorkers)
 
-	for i, worker := range p.Workers {
+	// Loop on active workers
+	for i, worker := range activeWorkers { // 'i' goes from 0 to (numWorkers-1)
 		wg.Add(1)
 		go func(w *WorkerClient, idx int) {
 			defer wg.Done()
@@ -178,16 +223,16 @@ func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequ
 				ModelId:      req.ModelId,
 				Features:     req.Features,
 				WorkerIndex:  int32(idx),
-				TotalWorkers: int32(numWorkers),
+				TotalWorkers: int32(numWorkers), // alive workers
 			}
 
 			resp, err := w.Client.Predict(ctx, workerReq)
 			if err != nil {
+				// todo manage fault tolerance here: what happens if a worker fails after it gets assigned a model part?
 				log.Printf("[Orchestrator] Warning: Worker %s failed predict: %v", w.Address, err)
 				return
 			}
 
-			// Send the list of predictions (even if empty)
 			if len(resp.Predictions) > 0 {
 				resultsChan <- resp.Predictions
 			}
@@ -199,7 +244,7 @@ func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequ
 		close(resultsChan)
 	}()
 
-	// 2. COLLECT & FLATTEN
+	// COLLECT PREDICTIONS
 	// We merge all partial lists into one global list of votes/values
 	// Note: Only aggregate once (no local aggregation on worker) in order to introduce less error.
 	var globalPredictions []string
@@ -214,7 +259,7 @@ func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequ
 
 	log.Printf("[Orchestrator] Collected %d total tree predictions. Aggregating globally...", len(globalPredictions))
 
-	// 3. SINGLE GLOBAL AGGREGATION
+	// AGGREGATION
 	if taskType == "regression" {
 		return aggregateRegression(globalPredictions), nil
 	} else {
@@ -222,7 +267,7 @@ func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequ
 	}
 }
 
-// --- Aggregation Strategies ---
+// --------------------------- Aggregation Strategies ---------------------
 
 // aggregateRegression calculates the mean of the results
 func aggregateRegression(results []string) string {

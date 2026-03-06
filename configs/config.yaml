@@ -12,6 +12,7 @@ workers:
   addresses:
     - "localhost:50051"   # Worker 1
     - "localhost:50052"   # Worker 2
+    - "localhost:50053"   # Worker 3
 storage:
   type: "s3"
   endpoint: "http://localhost:9000"     # URL MinIO/AWS (TEMPORARY)

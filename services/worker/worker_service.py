@@ -37,6 +37,10 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
         else:
             raise ValueError("Unknown task type")
 
+    def Health(self, request, context):
+        # Ping
+        return worker_pb2.HealthResponse(healthy=True)
+
     def Train(self, request, context):
         print(f"[Worker] Received Train request for model {request.model_id}")
 
@@ -82,8 +86,7 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
     def Predict(self, request, context):
         print(f"[Worker] Predict request for model {request.model_id}")
-        print(f"         I am worker {request.worker_index} of {request.total_workers}")
-
+        print(f"[Worker DEBUG] My Index: {request.worker_index}, Total Workers: {request.total_workers}")
         # Note: stateless behaviour
         # -> when prediction is asked, workers download trees from shared storage. No internal worker state.
 
@@ -91,6 +94,12 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
             # 1. LIST FILES FROM S3
             s3_prefix = f"models/{request.model_id}/"
             s3_keys = self.storage.list_files(s3_prefix)
+
+
+            # --- DEBUG BLOCK START ---
+            print(f"[Worker DEBUG] Raw keys found in S3: {len(s3_keys)}")
+            print(f"[Worker DEBUG] Keys list: {s3_keys}")
+            # --- DEBUG BLOCK END ---
 
             if not s3_keys:
                 # No file found

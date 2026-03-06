@@ -108,7 +108,13 @@ curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json"
 
 ## 9. Send an example predict request
 ```bash
-curl.exe -X POST http://localhost:8080/predict/705543a9-6601-4de5-92b4-f363b9768335 -H "Content-Type: application/json" -d "{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}"
+curl.exe -X POST http://localhost:8080/predict/a7b3f273-75e7-4654-a77d-ecfbdbbeab48 -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
+
+``````
+Try on three workers:
+```bash
+curl.exe -X POST http://localhost:8080/predict/45eda107-6e88-48da-92b0-7a4673b92d76 -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
+
 ``````
 
 ```bash
@@ -118,3 +124,4 @@ curl -X POST http://localhost:8080/predict/INSERISCI_UUID_QUI  -H "Content-Type:
 curl.exe -X POST http://localhost:8080/predict/test-model-iris -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": "classification"}'
 curl.exe -X POST http://localhost:8080/predict/705543a9-6601-4de5-92b4-f363b9768335 -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
 
+45eda107-6e88-48da-92b0-7a4673b92d76
