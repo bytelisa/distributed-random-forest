@@ -1,0 +1,46 @@
+# configs/config.docker.yaml
+
+app:
+  env: "docker"
+
+server:
+  port: 8080
+
+workers:
+  addresses:
+    - "worker-1:50051"   # Hostname is the service name in docker-compose
+    - "worker-2:50051"   # Same port but different host because of containerization
+    - "worker-3:50051"
+
+storage:
+  type: "s3"
+  endpoint: "http://minio:9000"     # 'minio' is the service name
+  access_key: "minioadmin"
+  secret_key: "minioadmin"
+  bucket: "example-storage"
+  local_temp_dir: "worker_temp_data"
+  base_path_prefix: "models/"
+
+system:
+  timeout_training_seconds: 60
+  timeout_prediction_seconds: 5
+  timeout_health_check_seconds: 2
+
+tasks:
+  - name: "iris-classification"
+    type: "classification"
+    dataset_path: "data/iris.csv"
+    target_column: "Species"
+    hyperparameters:
+      n_estimators: 10
+      max_depth: 5
+    test_features: [5.0, 3.6, 1.4, 0.2]
+
+  - name: "housing-regression"
+    type: "regression"
+    dataset_path: "data/housing.csv"
+    target_column: "median_house_value"
+    hyperparameters:
+      n_estimators: 15
+      max_depth: 10
+    test_features: [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.3252]

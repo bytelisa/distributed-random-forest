@@ -99,20 +99,32 @@ http://localhost:9001
 ```
 
 ## 8. Send an example training request
+Example for a classification task:
 ```bash
-curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
+curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/Iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
 ``````
+Example for a regression task:
 ```bash
-curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
+curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/housing.csv\", \"task_type\": \"regression\", \"target_column\": \"median_house_value\", \"n_estimators\": 10}'
 ``````
 
 ## 9. Send an example predict request
 Example for a classification task:
 ```bash
-curl.exe -X POST http://localhost:8080/predict/6dc8adf8-be22-4fa1-add3-7e504eb9fb3e -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
+curl.exe -X POST http://localhost:8080/predict/99388d3d-2048-4184-bd10-ea1c5366f914 -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
 
 ``````
 Example for a regression task:
 ```bash
-curl -X POST http://localhost:8080/predict/INSERISCI_UUID_QUI  -H "Content-Type: application/json"  -d '{"features": [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.32], "task_type": "regression"}'
+curl -X POST http://localhost:8080/predict/UUID_REGRESSION_MODEL  -H "Content-Type: application/json"  -d '{"features": [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.32], "task_type": "regression"}'
+``````
+
+## 10. Test orchestration
+Build the images:
+```bash
+docker-compose up --build
+``````
+Launch the containers:
+```bash
+docker-compose up
 ``````

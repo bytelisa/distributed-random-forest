@@ -1,0 +1,106 @@
+
+services:
+  # --- SHARED STORAGE ---
+  minio:
+    image: minio/minio
+    container_name: drf-minio
+    ports:
+      - "9000:9000" # API
+      - "9001:9001" # Console
+    environment:
+      MINIO_ROOT_USER: "minioadmin"
+      MINIO_ROOT_PASSWORD: "minioadmin"
+    # Create the bucket automatically at startup
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - drf-network
+
+  # --- MASTER NODE ---
+  master:
+    build:
+      context: .
+      dockerfile: Dockerfile.master
+    container_name: drf-master
+    ports:
+      - "8080:8080"
+    depends_on:
+      - minio
+      - worker-1
+      - worker-2
+      - worker-3
+    volumes:
+      # Mount the Docker-specific config volume into the container
+      # overwriting the default config.yaml
+      - ./configs/config.docker.yaml:/root/configs/config.yaml
+    networks:
+      - drf-network
+
+  # --- WORKER NODE 1 ---
+  worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: drf-worker-1
+    command: ["python", "cmd/worker/worker_main.py", "--port", "50051"]
+    depends_on:
+      - minio
+    volumes:
+      # Mount config volume
+      - ./configs/config.docker.yaml:/app/configs/config.yaml
+    networks:
+      - drf-network
+
+  # --- WORKER NODE 2 ---
+  worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: drf-worker-2
+    # Note: Inside the container, it listens on 50051.
+    # The container isolation allows multiple workers to use the same internal port.
+    command: ["python", "cmd/worker/worker_main.py", "--port", "50051"]
+    depends_on:
+      - minio
+    volumes:
+      - ./configs/config.docker.yaml:/app/configs/config.yaml
+    networks:
+      - drf-network
+
+
+  # --- WORKER NODE 3 ---
+  worker-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: drf-worker-3
+    command: [ "python", "cmd/worker/worker_main.py", "--port", "50051" ]
+    depends_on:
+      - minio
+    volumes:
+      - ./configs/config.docker.yaml:/app/configs/config.yaml
+    networks:
+      - drf-network
+
+  # Utility container to create bucket (optional but useful)
+  createbuckets:
+    image: minio/mc
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb myminio/example-storage;
+      /usr/bin/mc anonymous set public myminio/example-storage;
+      exit 0;
+      "
+    networks:
+      - drf-network
+
+volumes:
+  minio_data:
+
+networks:
+  drf-network:
+    driver: bridge

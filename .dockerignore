@@ -1,0 +1,9 @@
+# .dockerignore
+.git
+.idea
+.vscode
+venv/
+__pycache__/
+*.pyc
+worker_temp_data/
+minio_data/
