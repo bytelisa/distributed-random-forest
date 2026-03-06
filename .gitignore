@@ -4,10 +4,26 @@ venv/
 # Python Cache
 __pycache__/
 *.pyc
+*.py[cod]
+*$py.class
+.env
 
 # Go binary files
-/master_executable  # Esempio
+/master_executable
+/bin/
+dist/
 
 # IDE generated files
 .idea/
 .vscode/
+.DS_Store
+
+
+# --- Project Specific ---
+worker_temp_data/
+temp_worker_data/
+minio_data/
+
+# --- Data & Models ---
+*.csv
+*.joblib
