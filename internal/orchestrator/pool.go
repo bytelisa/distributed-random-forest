@@ -125,6 +125,8 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest)
 
 	log.Printf("[Orchestrator] Distributing %d trees among %d active workers...", totalTrees, numWorkers)
 
+	baseSeed := 511
+
 	// 3. Launch training tasks on healthy workers
 	for i, worker := range activeWorkers {
 		// Distribute remainder trees to the first [remainder] workers
@@ -138,8 +140,11 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest)
 		}
 
 		wg.Add(1)
-		go func(w *WorkerClient, trees int) {
+		go func(w *WorkerClient, trees int, workerIndex int) {
 			defer wg.Done()
+
+			// Unique worker index
+			workerSeed := int32(baseSeed + workerIndex)
 
 			// Create specific request for this worker
 			workerReq := &pb.TrainRequest{
@@ -148,6 +153,7 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest)
 				TaskType:     req.TaskType,
 				TargetColumn: req.TargetColumn,
 				NEstimators:  int32(trees),
+				RandomSeed:   workerSeed,
 			}
 
 			log.Printf("[Orchestrator] Assigning %d trees to worker %s", trees, w.Address)
@@ -163,7 +169,7 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest)
 			}
 
 			msgChan <- fmt.Sprintf("[Worker %s]: %s", w.Address, resp.Message)
-		}(worker, treesForThisWorker)
+		}(worker, treesForThisWorker, i)
 	}
 
 	// 4. Wait for completion

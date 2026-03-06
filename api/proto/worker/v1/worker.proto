@@ -37,6 +37,10 @@ message TrainRequest {
   int32 max_depht = 5;
 
   string target_column = 6;
+
+  // Necessary for uncorrelated forests
+  int32 random_seed = 7;
+
 }
 
 message TrainResponse {

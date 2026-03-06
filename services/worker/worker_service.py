@@ -57,7 +57,8 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
                 data=df,
                 target_column=request.target_column,
                 task_type=ml_task_type,
-                n_estimators=request.n_estimators
+                n_estimators=request.n_estimators,
+                random_seed=request.random_seed
             )
 
             # Save model locally

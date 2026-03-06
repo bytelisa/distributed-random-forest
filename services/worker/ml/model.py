@@ -1,5 +1,6 @@
 # model.py
 import os
+import random
 from typing import Union
 import pandas as pd
 import numpy as np
@@ -9,6 +10,7 @@ from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
 class ModelError(Exception):
     pass
+
 
 def save_model(model, filepath: str):
     """Serialize the model with joblib."""
@@ -20,6 +22,7 @@ def save_model(model, filepath: str):
         print(f"[Model] Model saved in {filepath}")
     except Exception as e:
         raise ModelError(f"[Model] Error while saving model: {e}")
+
 
 def load_dataset(dataset_path: str) -> pd.DataFrame:
     """
@@ -38,7 +41,8 @@ def load_dataset(dataset_path: str) -> pd.DataFrame:
     except Exception as e:
         raise ModelError(f"[Model] Could not load dataset from {dataset_path}: {e}")
 
-def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estimators: int) -> Union[RandomForestClassifier, RandomForestRegressor]:
+
+def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estimators: int, random_seed=None) -> Union[RandomForestClassifier, RandomForestRegressor]:
     """
     Trains a RandomForest model.
     """
@@ -55,7 +59,7 @@ def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estima
     # 3. PREPARE FEATURES (X)
     X = data.drop(columns=[target_column])
 
-    # Remove 'Id' column if it exists (it's noise)
+    # Remove 'Id' column if it exists
     if 'Id' in X.columns:
         X = X.drop(columns=['Id'])
 
@@ -74,12 +78,19 @@ def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estima
 
     print(f"[Model] Training on features: {X_numeric.columns.tolist()}")
 
-    # todo choose better initialization
-    # 6. MODEL INITIALIZATION
+    # Important note: using different random seeds (not hardcoded) to initialize the different randomForest
+    # models is fundamental! Otherwise, the forests would be correlated and the entire validity of the
+    # ensemble method is lost. In fact, we need k different and uncorrelated samples to perform bootstrap.
+
+    seed = random_seed if random_seed is not None else random.randint(0, 10000)
+
+    print(f"[Model] Training {n_estimators} trees using Random State: {seed}")
+
+    # 6. MODEL INITIALIZATION todo choose better initialization
     if task_type == 'classification':
-        model = RandomForestClassifier(n_estimators=n_estimators, random_state=42, n_jobs=1)
+        model = RandomForestClassifier(n_estimators=n_estimators, random_state=seed, n_jobs=1)
     elif task_type == 'regression':
-        model = RandomForestRegressor(n_estimators=n_estimators, random_state=42, n_jobs=1)
+        model = RandomForestRegressor(n_estimators=n_estimators, random_state=seed, n_jobs=1)
     else:
         raise ModelError(f"Invalid task type '{task_type}'. Choose 'classification' or 'regression'.")
 
