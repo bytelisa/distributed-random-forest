@@ -25,13 +25,15 @@ type WorkerClient struct {
 
 // WorkerPool manages the list of connected workers
 type WorkerPool struct {
-	Workers []*WorkerClient
+	Workers            []*WorkerClient
+	HealthCheckTimeout time.Duration
 }
 
 // NewWorkerPool initializes connections to all workers listed in the config
-func NewWorkerPool(addresses []string) (*WorkerPool, error) {
+func NewWorkerPool(addresses []string, healthTimeout int) (*WorkerPool, error) {
 	pool := &WorkerPool{
-		Workers: make([]*WorkerClient, 0, len(addresses)),
+		Workers:            make([]*WorkerClient, 0, len(addresses)),
+		HealthCheckTimeout: time.Duration(healthTimeout) * time.Second,
 	}
 
 	for _, addr := range addresses {
@@ -72,8 +74,8 @@ func (p *WorkerPool) getHealthyWorkers(ctx context.Context) ([]*WorkerClient, er
 		go func(worker *WorkerClient) {
 			defer wg.Done()
 
-			// Quick timeout for health check
-			shortCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
+			// Timeout
+			shortCtx, cancel := context.WithTimeout(ctx, p.HealthCheckTimeout)
 			defer cancel()
 
 			resp, err := worker.Client.Health(shortCtx, &pb.HealthRequest{})
@@ -96,50 +98,50 @@ func (p *WorkerPool) getHealthyWorkers(ctx context.Context) ([]*WorkerClient, er
 	return healthyWorkers, nil
 }
 
-// TrainDistributed splits the work among available workers and waits for completion
+// TrainDistributed splits the work among available (healthy) workers only and waits for completion
 func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest) (*pb.TrainResponse, error) {
 
-	numWorkers := len(p.Workers)
-	if numWorkers == 0 {
-		return nil, fmt.Errorf("no workers available for training")
+	// 1. Dynamic Health Check: Identify active workers before starting
+	activeWorkers, err := p.getHealthyWorkers(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("distributed training failed: %w", err)
 	}
 
-	// 1. Calculate trees per worker
-	// Example: 10 trees, 3 workers -> 4, 3, 3
+	numWorkers := len(activeWorkers)
+	log.Printf("[Orchestrator] Starting training on %d healthy workers (Configured: %d)", numWorkers, len(p.Workers))
+
 	totalTrees := int(req.NEstimators)
+	if totalTrees == 0 {
+		return &pb.TrainResponse{Success: true, Message: "Nothing to train (0 trees requested)"}, nil
+	}
+
+	// 2. Calculate load distribution
 	baseTrees := totalTrees / numWorkers
 	remainder := totalTrees % numWorkers
 
 	var wg sync.WaitGroup
-
-	// Channel to collect errors from goroutines
 	errChan := make(chan error, numWorkers)
-	// Channel to collect success messages (optional)
 	msgChan := make(chan string, numWorkers)
 
-	log.Printf("[Orchestrator] Distributing %d trees among %d workers...", totalTrees, numWorkers)
+	log.Printf("[Orchestrator] Distributing %d trees among %d active workers...", totalTrees, numWorkers)
 
-	// 2. Launch parallel requests
-	for i, worker := range p.Workers {
-		wg.Add(1) // add 1 task to the wait group (when the wait group gets to 0 all blocked goroutines are released)
-
-		// Calculate specific tree count for this worker
-		treesForThisWorker := baseTrees
+	// 3. Launch training tasks on healthy workers
+	for i, worker := range activeWorkers {
 		// Distribute remainder trees to the first [remainder] workers
+		treesForThisWorker := baseTrees
 		if i < remainder {
 			treesForThisWorker++
 		}
 
-		// Don't start a worker for 0 trees (edge case)
 		if treesForThisWorker == 0 {
-			wg.Done()
 			continue
 		}
 
+		wg.Add(1)
 		go func(w *WorkerClient, trees int) {
 			defer wg.Done()
 
-			// Each Worker now handles a new TrainRequest where the number of estimators has been updated
+			// Create specific request for this worker
 			workerReq := &pb.TrainRequest{
 				ModelId:      req.ModelId,
 				DatasetUrl:   req.DatasetUrl,
@@ -148,7 +150,7 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest)
 				NEstimators:  int32(trees),
 			}
 
-			log.Printf("[Orchestrator] Sending %d trees to worker %s", trees, w.Address)
+			log.Printf("[Orchestrator] Assigning %d trees to worker %s", trees, w.Address)
 
 			resp, err := w.Client.Train(ctx, workerReq)
 			if err != nil {
@@ -164,25 +166,24 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest)
 		}(worker, treesForThisWorker)
 	}
 
-	// 3. Wait for all
+	// 4. Wait for completion
 	wg.Wait()
 	close(errChan)
 	close(msgChan)
 
-	// 4. Check for errors
-	// In this simple version, if ANY worker fails, we consider the training failed.
+	// Check if any worker failed during execution
+	// todo more fault tolerance here?
 	if len(errChan) > 0 {
-		// Collect first error
 		err := <-errChan
 		return &pb.TrainResponse{
 			Success: false,
-			Message: fmt.Sprintf("Distributed training failed. First error: %v", err),
-		}, nil // We return nil error because the RPC call itself succeeded (we got a response object)
+			Message: fmt.Sprintf("Distributed training failed mid-process. Error: %v", err),
+		}, nil
 	}
 
 	return &pb.TrainResponse{
 		Success: true,
-		Message: fmt.Sprintf("Distributed training completed on %d workers.", numWorkers),
+		Message: fmt.Sprintf("Training completed successfully on %d workers.", numWorkers),
 	}, nil
 }
 

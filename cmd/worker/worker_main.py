@@ -12,10 +12,17 @@ sys.path.append(os.getcwd())
 
 from api.proto.worker.v1 import worker_pb2_grpc
 from services.worker.worker_service import WorkerService
-
+from services.worker.config import load_config
 
 def serve():
     print("Worker service starting...")
+
+    try:
+        cfg = load_config()
+        print(f"[Worker] Config loaded. Max threads: {cfg.grpc_max_threads}")
+    except Exception as e:
+        print(f"[Worker] Failed to load config: {e}")
+        return
 
     # The worker acts as a grpc server towards the master, which acts as a grpc client requesting the worker's services.
 
@@ -27,7 +34,7 @@ def serve():
     port = int(args.port)
 
     # Create a gRPC server
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=cfg.grpc_max_threads))
 
     # Register WorkerService on the server
     worker_pb2_grpc.add_WorkerServicer_to_server(WorkerService(worker_id=port), server)

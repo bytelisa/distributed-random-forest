@@ -32,6 +32,16 @@ class Config:
     def local_temp_dir(self):
         return self._cfg['storage'].get('local_temp_dir', 'temp_data')
 
+    @property
+    def grpc_max_threads(self):
+        # Default to 10 if not found
+        return self._cfg.get('workers', {}).get('grpc_max_threads', 10)
+
+    @property
+    def model_prefix(self):
+        # Default to "models/"
+        return self._cfg['storage'].get('base_path_prefix', 'models/')
+
 # Global instance or factory to load it
 def load_config():
     return Config()

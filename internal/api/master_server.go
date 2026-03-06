@@ -23,8 +23,9 @@ type Server struct {
 
 // NewServer initializes the REST API server
 func NewServer(cfg *config.Config) (*Server, error) {
+
 	// 1. Initialize Worker Pool
-	pool, err := orchestrator.NewWorkerPool(cfg.Workers.Addresses)
+	pool, err := orchestrator.NewWorkerPool(cfg.Workers.Addresses, cfg.System.TimeoutHealthCheck)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize worker pool: %w", err)
 	}
@@ -70,7 +71,9 @@ func (s *Server) handleTrain(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Read timeout from config file
+	timeout := time.Duration(s.config.System.TimeoutTraining) * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	grpcReq := &pb.TrainRequest{
@@ -113,8 +116,9 @@ func (s *Server) handlePredict(c *gin.Context) {
 		return
 	}
 
-	// Timeout for inference
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Timeout for inference (read from config file)
+	timeout := time.Duration(s.config.System.TimeoutPrediction) * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	// Prepare base request

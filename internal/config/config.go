@@ -15,6 +15,7 @@ type Config struct {
 	Workers WorkerConfig  `mapstructure:"workers"`
 	Storage StorageConfig `mapstructure:"storage"`
 	Tasks   []TaskConfig  `mapstructure:"tasks"`
+	System  SystemConfig  `mapstructure:"system"`
 }
 
 type AppConfig struct {
@@ -41,6 +42,12 @@ type TaskConfig struct {
 	TargetColumn    string         `mapstructure:"target_column"`
 	Hyperparameters map[string]int `mapstructure:"hyperparameters"` // Semplificato a int per ora
 	TestFeatures    []float32      `mapstructure:"test_features"`
+}
+
+type SystemConfig struct {
+	TimeoutTraining    int `mapstructure:"timeout_training_seconds"`
+	TimeoutPrediction  int `mapstructure:"timeout_prediction_seconds"`
+	TimeoutHealthCheck int `mapstructure:"timeout_health_check_seconds"`
 }
 
 // LoadConfig reads the config file

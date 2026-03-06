@@ -93,7 +93,7 @@ go run cmd/master/master_main.go
 ```bash
 docker-compose -f deployments/docker-compose.yml up -d
 ```
-Manage models on this link:
+Manage trained models on this link:
 ```bash
 http://localhost:9001
 ```
@@ -107,21 +107,12 @@ curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json"
 ``````
 
 ## 9. Send an example predict request
+Example for a classification task:
 ```bash
-curl.exe -X POST http://localhost:8080/predict/a7b3f273-75e7-4654-a77d-ecfbdbbeab48 -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
+curl.exe -X POST http://localhost:8080/predict/6dc8adf8-be22-4fa1-add3-7e504eb9fb3e -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
 
 ``````
-Try on three workers:
-```bash
-curl.exe -X POST http://localhost:8080/predict/45eda107-6e88-48da-92b0-7a4673b92d76 -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
-
-``````
-
+Example for a regression task:
 ```bash
 curl -X POST http://localhost:8080/predict/INSERISCI_UUID_QUI  -H "Content-Type: application/json"  -d '{"features": [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.32], "task_type": "regression"}'
 ``````
-
-curl.exe -X POST http://localhost:8080/predict/test-model-iris -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": "classification"}'
-curl.exe -X POST http://localhost:8080/predict/705543a9-6601-4de5-92b4-f363b9768335 -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
-
-45eda107-6e88-48da-92b0-7a4673b92d76

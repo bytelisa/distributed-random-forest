@@ -11,8 +11,6 @@ import uuid
 # Note: all functions take and return objects defined in the two generated _pb2.py files,
 # which implement the interface worker.proto in python.
 
-# Temporary local directory for processing files
-LOCAL_TEMP_DIR = "temp_worker_data"
 
 class WorkerService(worker_pb2_grpc.WorkerServicer):
     def __init__(self, worker_id):
@@ -84,6 +82,8 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
             print(f"[Error Train] {e}")
             return worker_pb2.TrainResponse(success=False, message=str(e))
 
+
+
     def Predict(self, request, context):
         print(f"[Worker] Predict request for model {request.model_id}")
         print(f"[Worker DEBUG] My Index: {request.worker_index}, Total Workers: {request.total_workers}")
@@ -92,7 +92,9 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
         try:
             # 1. LIST FILES FROM S3
-            s3_prefix = f"models/{request.model_id}/"
+            # Remove trailing slash if user added it, then add it back to be safe
+            prefix = self.cfg.model_prefix.strip("/")
+            s3_prefix = f"{prefix}/{request.model_id}/"
             s3_keys = self.storage.list_files(s3_prefix)
 
 
