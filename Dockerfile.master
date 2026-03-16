@@ -29,7 +29,7 @@ WORKDIR /root/
 # Copy the binary from the builder stage
 COPY --from=builder /app/master_exec .
 
-# Copy configuration files (we will mount them via volume, but copying defaults is good practice)
+# Copy configuration files
 COPY configs ./configs
 
 # Expose the API port

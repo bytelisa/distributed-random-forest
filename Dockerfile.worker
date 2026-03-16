@@ -21,7 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # (Necessary because worker_service imports form api/ and services/)
 COPY . .
 
-# Expose the gRPC port (default, can be overridden)
+# Expose the gRPC port
 EXPOSE 50051
 
 # The entrypoint command.

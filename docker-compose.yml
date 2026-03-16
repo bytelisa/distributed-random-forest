@@ -83,7 +83,7 @@ services:
     networks:
       - drf-network
 
-  # Utility container to create bucket (optional but useful)
+  # Utility container to create bucket
   createbuckets:
     image: minio/mc
     depends_on:

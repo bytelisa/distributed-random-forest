@@ -35,9 +35,11 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
         else:
             raise ValueError("Unknown task type")
 
+
     def Health(self, request, context):
         # Ping
         return worker_pb2.HealthResponse(healthy=True)
+
 
     def Train(self, request, context):
         print(f"[Worker] Received Train request for model {request.model_id}")
@@ -82,7 +84,6 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
         except Exception as e:
             print(f"[Error Train] {e}")
             return worker_pb2.TrainResponse(success=False, message=str(e))
-
 
 
     def Predict(self, request, context):
