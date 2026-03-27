@@ -1,0 +1,6 @@
+{
+  "dataset_url": "iris.csv",
+  "task_type": "classification",
+  "target_column": "Species",
+  "n_estimators": 30
+}

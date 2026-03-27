@@ -101,7 +101,7 @@ http://localhost:9001
 ## 8. Send an example training request
 Example for a classification task:
 ```bash
-curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/Iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
+curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"s3://example-storage/iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
 ``````
 Example for a regression task:
 ```bash
@@ -124,7 +124,16 @@ Build the images:
 ```bash
 docker-compose up --build
 ``````
-Launch the containers:
+or just launch the containers:
 ```bash
 docker-compose up
+``````
+or rebuild a single image
+```bash
+docker-compose up --build -d master
+``````
+
+## 11. Send training request
+```bash
+curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d "@train_request.json"
 ``````

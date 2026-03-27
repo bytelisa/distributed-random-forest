@@ -109,6 +109,8 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 	}
 	numWorkers := len(activeWorkers)
 
+	log.Printf("[Orchestrator] Running partitioner script for model %s into %d parts...", req.ModelId, numWorkers)
+
 	// 1. RUN DATASET PARTITIONER
 	// Execute the python script to prepare data on S3
 	cmd := exec.CommandContext(ctx, "python", "scripts/partitioner.py",
@@ -125,7 +127,15 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 		return nil, fmt.Errorf("partitioning failed: %w, logs: %s", err, string(output))
 	}
 
+	// DEBUG
+	log.Printf("[Orchestrator] Partitioner script finished successfully.")
+
 	// 2. DISTRIBUTE TRAINING TASKS
+
+	// DEBUG
+	datasetFolder := fmt.Sprintf("models/%s/dataset_partitions/", req.ModelId)
+	log.Printf("[Orchestrator] Distributing training tasks. Dataset folder: %s", datasetFolder)
+
 	var wg sync.WaitGroup
 	errChan := make(chan error, numWorkers)
 
@@ -137,6 +147,9 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 			// We pass the base folder, not the specific file
 			// The worker will figure out which file to grab
 			datasetFolder := fmt.Sprintf("models/%s/dataset_partitions/", req.ModelId)
+
+			//DEBUG
+			log.Printf("[Orchestrator] Sending Train request to Worker %d: %d trees on dataset folder.", idx, req.NEstimators)
 
 			workerReq := &pb.TrainRequest{
 				ModelId:      req.ModelId,

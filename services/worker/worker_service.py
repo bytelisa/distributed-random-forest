@@ -42,10 +42,20 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
 
     def Train(self, request, context):
+
+        # DEBUG
+        print(f"---[Worker {request.worker_index}/{request.total_workers - 1}] TRAIN JOB STARTED ---")
+        print(f"[Worker {request.worker_index}] Model ID: {request.model_id}")
+        print(f"[Worker {request.worker_index}] Target trees to train: {request.n_estimators}")
+        print(f"[Worker {request.worker_index}] Looking for dataset partitions in: {request.dataset_url}")
+
         try:
             # 1. LIST FILES FROM S3 DATASET FOLDER
             # request.dataset_url is now "models/{model_id}/dataset_partitions/"
             s3_keys = self.storage.list_files(request.dataset_url)
+
+            # DEBUG
+            print(f"[Worker {request.worker_index}] Found {len(s3_keys)} total dataset partitions on S3.")
 
             if not s3_keys:
                 raise ValueError(f"No dataset partitions found in {request.dataset_url}")
@@ -60,6 +70,9 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
             my_partition_key = s3_keys[request.worker_index]
 
+            # DEBUG
+            print(f"[Worker {request.worker_index}] Selected partition for this node: {my_partition_key}")
+
             # 3. DOWNLOAD AND TRAIN
             dataset_filename = os.path.basename(my_partition_key)
             local_dataset_path = os.path.join(self.local_temp_dir, dataset_filename)
@@ -67,6 +80,9 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
             self.storage.download_file(my_partition_key, local_dataset_path)
 
             df = ml_model.load_dataset(local_dataset_path)
+
+            # DEBUG: Prove data parallelism is working
+            print(f"[Worker {request.worker_index}] Loaded dataset partition successfully. Shape: {df.shape[0]} rows, {df.shape[1]} columns.")
 
             # Train a full forest on this dataset slice
             trained_model = ml_model.train_model(
@@ -84,6 +100,11 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
             s3_model_key = f"models/{request.model_id}/{model_filename}"
             self.storage.upload_file(local_model_path, s3_model_key)
+
+            # DEBUG
+            print(f"[Worker {request.worker_index}] Trained model uploaded to: {s3_model_key}")
+            print(f"---[Worker {request.worker_index}] TRAIN JOB COMPLETED ---")
+
 
             return worker_pb2.TrainResponse(success=True, message="Training completed.")
 

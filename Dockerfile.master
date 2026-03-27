@@ -1,39 +1,33 @@
-# Dockerfile.master
-
-# --- STAGE 1: Build the binary ---
+# --- STAGE 1: Build the Go binary ---
 FROM golang:alpine AS builder
 
-# Install system dependencies required for compilation (if any)
-RUN apk add --no-cache git
-
-# Set working directory inside the container
 WORKDIR /app
 
-# Copy dependency files first (better caching)
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy the source code
 COPY . .
 
-# Build the application
-# CGO_ENABLED=0 creates a statically linked binary (no dependency on system libc)
-# -o master_exec defines the output name
 RUN CGO_ENABLED=0 GOOS=linux go build -o master_exec cmd/master/master_main.go
 
-# --- STAGE 2: Create the final lightweight image ---
-FROM alpine:latest
+# --- STAGE 2: Create the final image (Now based on Python!) ---
+FROM python:3.9-slim
 
 WORKDIR /root/
 
-# Copy the binary from the builder stage
+# Install the Python libraries needed by the partitioner script
+RUN pip install --no-cache-dir pandas numpy boto3
+
+# Copy the Go binary from the builder stage
 COPY --from=builder /app/master_exec .
 
-# Copy configuration files
+# Copy configs
 COPY configs ./configs
 
-# Expose the API port
+# to find partitioner.py
+COPY scripts ./scripts
+
 EXPOSE 8080
 
-# Command to run the executable
+# Command to run the Go executable
 CMD ["./master_exec"]
