@@ -29,7 +29,10 @@ service Worker {
 
 message TrainRequest {
   string model_id = 1;
+
+  // this url will redirect each worker to a specific partition of the dataset
   string dataset_url = 2;
+
   TaskType task_type = 3;
 
   // RandomForest hyperparameters
@@ -41,6 +44,9 @@ message TrainRequest {
   // Necessary for uncorrelated forests
   int32 random_seed = 7;
 
+  // NEW: Fields for deterministic dataset partitioning
+  int32 worker_index = 8;
+  int32 total_workers = 9;
 }
 
 message TrainResponse {

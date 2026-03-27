@@ -84,8 +84,8 @@ func (s *Server) handleTrain(c *gin.Context) {
 		NEstimators:  int32(req.NEstimators),
 	}
 
-	// UPDATE: Call Distributed Training
-	orchestratorResp, err := s.workerPool.TrainDistributed(ctx, grpcReq)
+	// Call Distributed Training
+	orchestratorResp, err := s.workerPool.TrainDistributed(ctx, grpcReq, &s.config.Storage)
 
 	if err != nil {
 		// System error (e.g. no workers)

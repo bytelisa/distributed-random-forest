@@ -42,48 +42,54 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
 
     def Train(self, request, context):
-        print(f"[Worker] Received Train request for model {request.model_id}")
-
         try:
-            # Use self.local_temp_dir
-            dataset_filename = os.path.basename(request.dataset_url)
+            # 1. LIST FILES FROM S3 DATASET FOLDER
+            # request.dataset_url is now "models/{model_id}/dataset_partitions/"
+            s3_keys = self.storage.list_files(request.dataset_url)
+
+            if not s3_keys:
+                raise ValueError(f"No dataset partitions found in {request.dataset_url}")
+
+            # 2. DETERMINISTIC PARTITIONING
+            s3_keys.sort()
+
+            # Pick the exact partition for this worker
+            # Since num_partitions == total_workers, we can just use the index directly
+            if request.worker_index >= len(s3_keys):
+                raise ValueError("Worker index out of bounds for available partitions")
+
+            my_partition_key = s3_keys[request.worker_index]
+
+            # 3. DOWNLOAD AND TRAIN
+            dataset_filename = os.path.basename(my_partition_key)
             local_dataset_path = os.path.join(self.local_temp_dir, dataset_filename)
 
-            self.storage.download_file(request.dataset_url, local_dataset_path)
+            self.storage.download_file(my_partition_key, local_dataset_path)
 
-            # Load dataset and train
-            ml_task_type = self._convert_type(request.task_type)
             df = ml_model.load_dataset(local_dataset_path)
 
+            # Train a full forest on this dataset slice
             trained_model = ml_model.train_model(
                 data=df,
                 target_column=request.target_column,
-                task_type=ml_task_type,
-                n_estimators=request.n_estimators,
-                random_seed=request.random_seed
+                task_type=self._convert_type(request.task_type),
+                n_estimators=request.n_estimators
             )
 
-            # Save model locally
-
-            # unique suffix for this worker (necessary to not overwrite models of other workers)
+            # 4. SAVE MODEL PART TO S3
             part_id = str(uuid.uuid4())
-            model_filename = f"part_{part_id}.joblib"
+            model_filename = f"forest_part_{part_id}.joblib"
             local_model_path = os.path.join(self.local_temp_dir, model_filename)
             ml_model.save_model(trained_model, local_model_path)
 
-            # Upload to S3
-            #request's model id is now a directory where all workers upload their models
             s3_model_key = f"models/{request.model_id}/{model_filename}"
             self.storage.upload_file(local_model_path, s3_model_key)
 
-            return worker_pb2.TrainResponse(
-                success=True,
-                message=f"Training part completed. Saved to s3://{self.cfg.storage_bucket}/{s3_model_key}"
-            )
+            return worker_pb2.TrainResponse(success=True, message="Training completed.")
 
         except Exception as e:
-            print(f"[Error Train] {e}")
             return worker_pb2.TrainResponse(success=False, message=str(e))
+
 
 
     def Predict(self, request, context):

@@ -7,11 +7,13 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os/exec"
 	"strconv"
 	"sync"
 	"time"
 
 	pb "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1"
+	"github.com/bytelisa/distributed-random-forest/internal/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -99,83 +101,62 @@ func (p *WorkerPool) getHealthyWorkers(ctx context.Context) ([]*WorkerClient, er
 }
 
 // TrainDistributed splits the work among available (healthy) workers only and waits for completion
-func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest) (*pb.TrainResponse, error) {
+func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest, storageCfg *config.StorageConfig) (*pb.TrainResponse, error) {
 
-	// 1. Dynamic Health Check: Identify active workers before starting
 	activeWorkers, err := p.getHealthyWorkers(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("distributed training failed: %w", err)
+		return nil, fmt.Errorf("training failed: %w", err)
 	}
-
 	numWorkers := len(activeWorkers)
-	log.Printf("[Orchestrator] Starting training on %d healthy workers (Configured: %d)", numWorkers, len(p.Workers))
 
-	totalTrees := int(req.NEstimators)
-	if totalTrees == 0 {
-		return &pb.TrainResponse{Success: true, Message: "Nothing to train (0 trees requested)"}, nil
+	// 1. RUN DATASET PARTITIONER
+	// Execute the python script to prepare data on S3
+	cmd := exec.CommandContext(ctx, "python", "scripts/partitioner.py",
+		"--s3-endpoint", storageCfg.Endpoint,
+		"--s3-access-key", storageCfg.AccessKey,
+		"--s3-secret-key", storageCfg.SecretKey,
+		"--s3-bucket", storageCfg.Bucket,
+		"--source-key", req.DatasetUrl, // e.g., "data/iris.csv" (assuming we clean the s3:// prefix before)
+		"--model-id", req.ModelId,
+		"--num-partitions", fmt.Sprintf("%d", numWorkers),
+	)
+
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("partitioning failed: %w, logs: %s", err, string(output))
 	}
 
-	// 2. Calculate load distribution
-	baseTrees := totalTrees / numWorkers
-	remainder := totalTrees % numWorkers
-
+	// 2. DISTRIBUTE TRAINING TASKS
 	var wg sync.WaitGroup
 	errChan := make(chan error, numWorkers)
-	msgChan := make(chan string, numWorkers)
 
-	log.Printf("[Orchestrator] Distributing %d trees among %d active workers...", totalTrees, numWorkers)
-
-	baseSeed := 511
-
-	// 3. Launch training tasks on healthy workers
 	for i, worker := range activeWorkers {
-		// Distribute remainder trees to the first [remainder] workers
-		treesForThisWorker := baseTrees
-		if i < remainder {
-			treesForThisWorker++
-		}
-
-		if treesForThisWorker == 0 {
-			continue
-		}
-
 		wg.Add(1)
-		go func(w *WorkerClient, trees int, workerIndex int) {
+		go func(w *WorkerClient, idx int) {
 			defer wg.Done()
 
-			// Unique worker index
-			workerSeed := int32(baseSeed + workerIndex)
+			// We pass the base folder, not the specific file
+			// The worker will figure out which file to grab
+			datasetFolder := fmt.Sprintf("models/%s/dataset_partitions/", req.ModelId)
 
-			// Create specific request for this worker
 			workerReq := &pb.TrainRequest{
 				ModelId:      req.ModelId,
-				DatasetUrl:   req.DatasetUrl,
+				DatasetUrl:   datasetFolder,
 				TaskType:     req.TaskType,
 				TargetColumn: req.TargetColumn,
-				NEstimators:  int32(trees),
-				RandomSeed:   workerSeed,
+				NEstimators:  req.NEstimators, // Each worker trains a FULL forest (e.g., 100 trees)
+				WorkerIndex:  int32(idx),
+				TotalWorkers: int32(numWorkers),
 			}
-
-			log.Printf("[Orchestrator] Assigning %d trees to worker %s", trees, w.Address)
 
 			resp, err := w.Client.Train(ctx, workerReq)
-			if err != nil {
-				errChan <- fmt.Errorf("worker %s failed: %w", w.Address, err)
-				return
+			if err != nil || !resp.Success {
+				errChan <- fmt.Errorf("worker %d failed: %v", idx, err)
 			}
-			if !resp.Success {
-				errChan <- fmt.Errorf("worker %s error: %s", w.Address, resp.Message)
-				return
-			}
-
-			msgChan <- fmt.Sprintf("[Worker %s]: %s", w.Address, resp.Message)
-		}(worker, treesForThisWorker, i)
+		}(worker, i)
 	}
 
-	// 4. Wait for completion
 	wg.Wait()
 	close(errChan)
-	close(msgChan)
 
 	// Check if any worker failed during execution
 	// todo more fault tolerance here?
