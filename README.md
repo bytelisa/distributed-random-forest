@@ -111,7 +111,7 @@ curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json"
 ## 9. Send an example predict request
 Example for a classification task:
 ```bash
-curl.exe -X POST http://localhost:8080/predict/99388d3d-2048-4184-bd10-ea1c5366f914 -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
+curl.exe -X POST http://localhost:8080/predict/583c6918-7726-4fe5-b787-f779350b5e87 -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
 
 ``````
 Example for a regression task:
@@ -137,3 +137,9 @@ docker-compose up --build -d master
 ```bash
 curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d "@train_request.json"
 ``````
+
+## 12. Send predict request
+```bash
+curl.exe -X POST http://localhost:8080/predict/583c6918-7726-4fe5-b787-f779350b5e87 -H "Content-Type: application/json" -d "@predict_request.json"
+``````
+

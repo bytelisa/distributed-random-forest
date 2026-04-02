@@ -98,7 +98,7 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
             local_model_path = os.path.join(self.local_temp_dir, model_filename)
             ml_model.save_model(trained_model, local_model_path)
 
-            s3_model_key = f"models/{request.model_id}/{model_filename}"
+            s3_model_key = f"models/{request.model_id}/model_parts/{model_filename}"
             self.storage.upload_file(local_model_path, s3_model_key)
 
             # DEBUG
@@ -121,10 +121,12 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
         try:
             # 1. LIST FILES FROM S3
-            # Remove trailing slash if user added it, then add it back to be safe
-            prefix = self.cfg.model_prefix.strip("/")
-            s3_prefix = f"{prefix}/{request.model_id}/"
-            s3_keys = self.storage.list_files(s3_prefix)
+            s3_prefix = f"models/{request.model_id}/model_parts"
+            all_s3_keys = self.storage.list_files(s3_prefix)
+
+            # CRITICAL FIX: Filter out the dataset partitions (.csv)
+            # We only want to load the trained random forests (.joblib)
+            s3_keys =[k for k in all_s3_keys if k.endswith('.joblib')]
 
 
             # --- DEBUG BLOCK START ---
