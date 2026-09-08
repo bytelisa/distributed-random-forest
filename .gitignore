@@ -27,3 +27,6 @@ minio_data/
 # --- Data & Models ---
 *.csv
 *.joblib
+
+# --- Config ---
+config.*
