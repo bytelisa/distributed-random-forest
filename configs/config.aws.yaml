@@ -1,0 +1,57 @@
+# configs/config.aws.yaml
+#
+# Config per il deploy su AWS (EC2 + S3 al posto di MinIO).
+
+
+app:
+  env: "aws"
+
+server:
+  port: 8080
+
+workers:
+  grpc_max_threads: 10
+  addresses:
+    # IP PRIVATI delle istanze worker EC2 (stessa VPC del master), non pubblici.
+    - "172.31.25.45:50051"    # Worker 1
+    - "172.31.30.123:50051"   # Worker 2
+
+storage:
+  type: "s3"
+  endpoint: "https://s3.us-east-1.amazonaws.com"
+  access_key: ""
+  secret_key: ""
+  bucket: "distributed-rf-demo-bucket"
+  local_temp_dir: "worker_temp_data"
+  base_path_prefix: "models/"
+
+# Timeouts & Limits
+# Valori più larghi di quelli locali/docker: training reale su EC2, con
+# dataset più grandi e trasferimenti verso S3 reale, richiede più tempo
+# dei test rapidi su iris/housing. Da ricalibrare in base ai task scelti.
+system:
+  timeout_training_seconds: 300
+  timeout_prediction_seconds: 15
+  timeout_health_check_seconds: 3
+
+# Task di riferimento per test rapidi post-deploy (stessi di locale/docker).
+# Se/quando scegli dataset più interessanti, aggiungi qui le nuove voci
+# invece di sostituire queste, così mantieni un test di smoke rapido.
+tasks:
+  - name: "iris-classification"
+    type: "classification"
+    dataset_path: "data/iris.csv"
+    target_column: "Species"
+    hyperparameters:
+      n_estimators: 10
+      max_depth: 5
+    test_features: [5.0, 3.6, 1.4, 0.2]
+
+  - name: "housing-regression"
+    type: "regression"
+    dataset_path: "data/housing.csv"
+    target_column: "median_house_value"
+    hyperparameters:
+      n_estimators: 15
+      max_depth: 10
+    test_features: [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.3252]
