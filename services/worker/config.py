@@ -18,11 +18,11 @@ class Config:
 
     @property
     def storage_access_key(self):
-        return self._cfg['storage']['access_key']
+        return self._cfg['storage'].get('access_key')
 
     @property
     def storage_secret_key(self):
-        return self._cfg['storage']['secret_key']
+        return self._cfg['storage'].get('secret_key')
 
     @property
     def storage_bucket(self):

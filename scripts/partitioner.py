@@ -11,8 +11,15 @@ import pandas as pd
 
 def run_partitioning(args):
     try:
-        s3_client = boto3.client('s3', endpoint_url=args.s3_endpoint,
-                                 aws_access_key_id=args.s3_access_key, aws_secret_access_key=args.s3_secret_key)
+        # If access/secret key are not provided, omits them so boto3
+        # falls back to its default credentials (e.g. the IAM role
+        # attached to the EC2 instance) instead of trying to auth with empty keys.
+        client_kwargs = {"endpoint_url": args.s3_endpoint}
+        if args.s3_access_key and args.s3_secret_key:
+            client_kwargs["aws_access_key_id"] = args.s3_access_key
+            client_kwargs["aws_secret_access_key"] = args.s3_secret_key
+
+        s3_client = boto3.client('s3', **client_kwargs)
 
         # Download source dataset
         local_source = f"/tmp/source_{args.model_id}.csv"
@@ -48,8 +55,8 @@ def run_partitioning(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--s3-endpoint", required=True)
-    parser.add_argument("--s3-access-key", required=True)
-    parser.add_argument("--s3-secret-key", required=True)
+    parser.add_argument("--s3-access-key", default=None)
+    parser.add_argument("--s3-secret-key", default=None)
     parser.add_argument("--s3-bucket", required=True)
     parser.add_argument("--source-key", required=True)
     parser.add_argument("--model-id", required=True)

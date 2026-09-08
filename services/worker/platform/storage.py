@@ -11,12 +11,15 @@ class StorageManager:
 
         print(f"[Storage] Initializing S3 client at {cfg.storage_endpoint}...")
 
-        self.s3_client = boto3.client(
-            's3',
-            endpoint_url=cfg.storage_endpoint,
-            aws_access_key_id=cfg.storage_access_key,
-            aws_secret_access_key=cfg.storage_secret_key
-        )
+        # If access/secret key are not set in the config, omits them so
+        # boto3 falls back to its default credentials (e.g. the IAM role
+        # attached to the EC2 instance) instead of trying to auth with empty keys.
+        client_kwargs = {"endpoint_url": cfg.storage_endpoint}
+        if cfg.storage_access_key and cfg.storage_secret_key:
+            client_kwargs["aws_access_key_id"] = cfg.storage_access_key
+            client_kwargs["aws_secret_access_key"] = cfg.storage_secret_key
+
+        self.s3_client = boto3.client('s3', **client_kwargs)
 
     def list_files(self, prefix: str):
         """
