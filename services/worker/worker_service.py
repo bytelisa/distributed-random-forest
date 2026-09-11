@@ -6,7 +6,6 @@ from api.proto.worker.v1 import worker_pb2_grpc
 from services.worker.ml import model as ml_model
 from services.worker.platform.storage import StorageManager
 from services.worker.config import load_config
-import uuid
 
 # Note: all functions take and return objects defined in the two generated _pb2.py files,
 # which implement the interface worker.proto in python.
@@ -93,8 +92,12 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
             )
 
             # 4. SAVE MODEL PART TO S3
-            part_id = str(uuid.uuid4())
-            model_filename = f"forest_part_{part_id}.joblib"
+            # Deterministic filename (partition index, not a random UUID):
+            # if this worker's part is regenerated later (e.g. reassigned
+            # after a health-check false negative), the upload overwrites
+            # the same S3 key instead of creating a duplicate part for the
+            # same partition.
+            model_filename = f"forest_part_{request.worker_index}.joblib"
             local_model_path = os.path.join(self.local_temp_dir, model_filename)
             ml_model.save_model(trained_model, local_model_path)
 
