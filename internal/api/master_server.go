@@ -40,6 +40,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	}
 
 	// Routes
+	router.GET("/health", s.handleHealth)
 	router.POST("/train", s.handleTrain)
 	router.POST("/predict/:model_id", s.handlePredict)
 
@@ -49,6 +50,12 @@ func NewServer(cfg *config.Config) (*Server, error) {
 // Start runs the HTTP server
 func (s *Server) Start(addr string) error {
 	return s.router.Run(addr)
+}
+
+// handleHealth is used by the Application Load Balancer's target group to
+// check whether this master instance is alive
+func (s *Server) handleHealth(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
 
 func (s *Server) handleTrain(c *gin.Context) {
