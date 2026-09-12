@@ -121,6 +121,9 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 		"--source-key", req.DatasetUrl, // e.g., "data/iris.csv" (assuming we clean the s3:// prefix before)
 		"--model-id", req.ModelId,
 		"--num-partitions", fmt.Sprintf("%d", numWorkers),
+		"--task-type", fmt.Sprintf("%d", int32(req.TaskType)),
+		"--target-column", req.TargetColumn,
+		"--n-estimators", fmt.Sprintf("%d", req.NEstimators),
 	)
 
 	if output, err := cmd.CombinedOutput(); err != nil {
