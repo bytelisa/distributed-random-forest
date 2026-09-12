@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import sys
 import boto3
@@ -13,7 +14,7 @@ def run_partitioning(args):
     try:
         # If access/secret key are not provided, omits them so boto3
         # falls back to its default credentials (e.g. the IAM role
-        # attached to the EC2 instance) instead of trying to auth with empty keys.
+        # attached to the EC2 instance).
         client_kwargs = {"endpoint_url": args.s3_endpoint}
         if args.s3_access_key and args.s3_secret_key:
             client_kwargs["aws_access_key_id"] = args.s3_access_key
@@ -46,6 +47,21 @@ def run_partitioning(args):
             os.remove(local_part)
 
         os.remove(local_source)
+
+        # Train request metadata: writes a small metadata file with the original training parameters.
+        # This is what lets a new master continue a training started with the previous master.
+        train_request = {
+            "task_type": args.task_type,
+            "target_column": args.target_column,
+            "n_estimators": args.n_estimators,
+            "total_partitions": args.num_partitions,
+        }
+        local_meta = f"/tmp/train_request_{args.model_id}.json"
+        with open(local_meta, "w") as f:
+            json.dump(train_request, f)
+        s3_client.upload_file(local_meta, args.s3_bucket, f"models/{args.model_id}/train_request.json")
+        os.remove(local_meta)
+
         return 0
 
     except Exception as e:
@@ -62,5 +78,11 @@ if __name__ == "__main__":
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--num-partitions", type=int, required=True)
     parser.add_argument("--shuffle", action='store_true', default=True)
+    # Original training parameters, persisted alongside the partitions so a
+    # missing model part can be reissued later without the original HTTP
+    # request (see scripts/reconciler.py).
+    parser.add_argument("--task-type", type=int, required=True)
+    parser.add_argument("--target-column", required=True)
+    parser.add_argument("--n-estimators", type=int, required=True)
 
     sys.exit(run_partitioning(parser.parse_args()))
