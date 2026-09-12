@@ -30,6 +30,12 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		return nil, fmt.Errorf("failed to initialize worker pool: %w", err)
 	}
 
+	// Cold standby recovery: if this instance was just launched by the Auto
+	// Scaling Group after a previous master crashed, catch up on any
+	// training left incomplete. Runs in the background so startup (and the
+	// ALB health check) isn't blocked on it.
+	go pool.ReconcileIncompleteTrainings(context.Background(), cfg)
+
 	// 2. Setup Router
 	router := gin.Default()
 
