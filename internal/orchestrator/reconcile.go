@@ -25,23 +25,22 @@ type incompleteModel struct {
 	MissingIndices  []int32
 }
 
+// FAULT TOLERANCE MID TRAINING
 // ReconcileIncompleteTrainings looks for trainings left incomplete by a
-// master crash and finishes them, using only what's on S3 - it never
-// needs the original HTTP request.
+// master crash and finishes them.
 //
-// This is the master-side half of the cold standby recovery path: it runs
-// once, in the background, right after the new master starts. A model can
-// be incomplete in one of two ways (see findIncompleteModels):
+// A model can be incomplete in one of two ways (see findIncompleteModels):
 //   - "partitioning_incomplete": the crash happened before dataset
 //     partitioning finished. Recovered by re-running the whole
-//     TrainDistributed flow for that model_id, which also refreshes how
-//     many partitions to use based on whichever workers are healthy now.
+//     TrainDistributed flow for that model_id, which also "refreshes" how
+//     many partitions to use based on how many workers are healthy now.
 //   - "training_incomplete": partitioning finished, but not every worker's
 //     model part made it to S3. Recovered by reissuing training for just
 //     the missing partitions.
 //
-// Models with no train_request.json at all are intentionally left alone -
-// too narrow a crash window to recover from (see report.md §5).
+// Models with no train_request.json at all are intentionally left out,
+// it's a very specific case (basically immediate crash) where we have no info to resume the training.
+// I decided that in this case it's up to the user to simply send another train req.
 func (p *WorkerPool) ReconcileIncompleteTrainings(ctx context.Context, cfg *config.Config) {
 	store, err := NewS3Store(ctx, &cfg.Storage)
 	if err != nil {
@@ -158,10 +157,12 @@ func findIncompleteModels(ctx context.Context, store *S3Store) ([]incompleteMode
 	return incomplete, nil
 }
 
-// recoverPartitioning redoes dataset partitioning (and the subsequent
-// training dispatch) for a model whose partitioning never completed. It's
-// the exact same flow as a brand new training request, just reusing the
-// existing model_id instead of generating a new one.
+// recoverPartitioning redoes dataset partitioning (and the subsequent training dispatch) for a model
+// whose partitioning never completed.
+// It's the exact same flow as a brand new training request, just reusing the
+// existing model_id instead of generating a new one, so that the user can use the received model_id and
+// no new requests are needed.
+// (resuming dataset partitioning through checkpointing was never an option :P )
 func (p *WorkerPool) recoverPartitioning(ctx context.Context, cfg *config.Config, m incompleteModel) {
 	log.Printf("[Reconciler] Model %s never finished partitioning - restarting it from scratch.", m.ModelID)
 
@@ -183,7 +184,7 @@ func (p *WorkerPool) recoverPartitioning(ctx context.Context, cfg *config.Config
 }
 
 // recoverMissingParts reissues training for the specific partitions of a
-// model that are missing a model part, without touching the ones already
+// model that are missing a corresponding trained model part, without touching the ones already
 // done.
 func (p *WorkerPool) recoverMissingParts(ctx context.Context, cfg *config.Config, m incompleteModel) {
 	log.Printf("[Reconciler] Model %s is missing partitions %v out of %d - reassigning.",
@@ -201,9 +202,7 @@ func (p *WorkerPool) recoverMissingParts(ctx context.Context, cfg *config.Config
 		}
 
 		// Any healthy worker can take it: workers are stateless and
-		// address dataset partitions/model parts by index, not by
-		// identity. Spread across healthy workers if several parts are
-		// missing at once.
+		// address dataset partitions/model parts by index.
 		worker := activeWorkers[int(idx)%len(activeWorkers)]
 
 		workerReq := &pb.TrainRequest{
