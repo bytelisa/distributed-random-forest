@@ -25,10 +25,17 @@ type WorkerClient struct {
 	Conn    *grpc.ClientConn
 }
 
+// PartitionFunc partitions the source dataset for req into numWorkers parts
+// and uploads them to S3 under models/{req.ModelId}/dataset_partitions/.
+// Exposed as a WorkerPool field (instead of being hardcoded) so tests can
+// substitute a fake that doesn't require a Python interpreter.
+type PartitionFunc func(ctx context.Context, storageCfg *config.StorageConfig, req *pb.TrainRequest, numWorkers int) error
+
 // WorkerPool manages the list of connected workers
 type WorkerPool struct {
 	Workers            []*WorkerClient
 	HealthCheckTimeout time.Duration
+	PartitionDataset   PartitionFunc
 }
 
 // NewWorkerPool initializes connections to all workers listed in the config
@@ -36,6 +43,7 @@ func NewWorkerPool(addresses []string, healthTimeout int) (*WorkerPool, error) {
 	pool := &WorkerPool{
 		Workers:            make([]*WorkerClient, 0, len(addresses)),
 		HealthCheckTimeout: time.Duration(healthTimeout) * time.Second,
+		PartitionDataset:   runPartitionerScript,
 	}
 
 	for _, addr := range addresses {
@@ -111,7 +119,7 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 
 	// 1. PERSIST TRAIN REQUEST METADATA
 	// Immediately for fault tolerance
-		store, err := NewS3Store(ctx, storageCfg)
+	store, err := NewS3Store(ctx, storageCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create S3 client: %w", err)
 	}
@@ -131,19 +139,8 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 	log.Printf("[Orchestrator] Running partitioner script for model %s into %d parts...", req.ModelId, numWorkers)
 
 	// 2. RUN DATASET PARTITIONER
-	// Execute the python script to prepare data on S3
-	cmd := exec.CommandContext(ctx, "python", "scripts/partitioner.py",
-		"--s3-endpoint", storageCfg.Endpoint,
-		"--s3-access-key", storageCfg.AccessKey,
-		"--s3-secret-key", storageCfg.SecretKey,
-		"--s3-bucket", storageCfg.Bucket,
-		"--source-key", req.DatasetUrl, // e.g., "data/iris.csv" (assuming we clean the s3:// prefix before)
-		"--model-id", req.ModelId,
-		"--num-partitions", fmt.Sprintf("%d", numWorkers),
-	)
-
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("partitioning failed: %w, logs: %s", err, string(output))
+	if err := p.PartitionDataset(ctx, storageCfg, req, numWorkers); err != nil {
+		return nil, fmt.Errorf("partitioning failed: %w", err)
 	}
 
 	// DEBUG
@@ -338,4 +335,23 @@ func (p *WorkerPool) Close() {
 	for _, w := range p.Workers {
 		w.Conn.Close()
 	}
+}
+
+// runPartitionerScript is the default PartitionFunc: it shells out to the
+// Python partitioner script. Requires "python" to be resolvable in PATH.
+func runPartitionerScript(ctx context.Context, storageCfg *config.StorageConfig, req *pb.TrainRequest, numWorkers int) error {
+	cmd := exec.CommandContext(ctx, "python", "scripts/partitioner.py",
+		"--s3-endpoint", storageCfg.Endpoint,
+		"--s3-access-key", storageCfg.AccessKey,
+		"--s3-secret-key", storageCfg.SecretKey,
+		"--s3-bucket", storageCfg.Bucket,
+		"--source-key", req.DatasetUrl, // e.g., "data/iris.csv" (assuming we clean the s3:// prefix before)
+		"--model-id", req.ModelId,
+		"--num-partitions", fmt.Sprintf("%d", numWorkers),
+	)
+
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%w, logs: %s", err, string(output))
+	}
+	return nil
 }

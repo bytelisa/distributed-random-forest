@@ -59,6 +59,19 @@ func (s *Server) Start(addr string) error {
 	return s.router.Run(addr)
 }
 
+// Router exposes the underlying HTTP handler, so tests can drive it directly
+// (e.g. via httptest) without binding a real port.
+func (s *Server) Router() http.Handler {
+	return s.router
+}
+
+// WorkerPool exposes the underlying worker pool, so tests can substitute
+// fault-injecting fakes (e.g. WorkerPool().PartitionDataset) before issuing
+// requests against Router().
+func (s *Server) WorkerPool() *orchestrator.WorkerPool {
+	return s.workerPool
+}
+
 // handleHealth is used by the Application Load Balancer's target group to
 // check whether this master instance is alive
 func (s *Server) handleHealth(c *gin.Context) {
