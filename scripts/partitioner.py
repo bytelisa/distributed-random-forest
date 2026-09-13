@@ -1,5 +1,4 @@
 import argparse
-import json
 import os
 import sys
 import boto3
@@ -9,6 +8,12 @@ import pandas as pd
 # Master's module responsible for dataset partitioning.
 # Partitions a dataset and uploads the parts to a specific S3 folder.
 # Fails silently with exit code 0 on success, or >0 on error.
+#
+# Note: the training parameters (task_type/target_column/n_estimators) are
+# no longer written here. They're persisted to S3 by
+# scripts/write_train_metadata.py, called by the Go master *before* this
+# script even runs, so that metadata survives a crash even if it happens
+# mid-partitioning (see scripts/reconciler.py).
 
 def run_partitioning(args):
     try:
@@ -47,21 +52,6 @@ def run_partitioning(args):
             os.remove(local_part)
 
         os.remove(local_source)
-
-        # Train request metadata: writes a small metadata file with the original training parameters.
-        # This is what lets a new master continue a training started with the previous master.
-        train_request = {
-            "task_type": args.task_type,
-            "target_column": args.target_column,
-            "n_estimators": args.n_estimators,
-            "total_partitions": args.num_partitions,
-        }
-        local_meta = f"/tmp/train_request_{args.model_id}.json"
-        with open(local_meta, "w") as f:
-            json.dump(train_request, f)
-        s3_client.upload_file(local_meta, args.s3_bucket, f"models/{args.model_id}/train_request.json")
-        os.remove(local_meta)
-
         return 0
 
     except Exception as e:
@@ -78,11 +68,5 @@ if __name__ == "__main__":
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--num-partitions", type=int, required=True)
     parser.add_argument("--shuffle", action='store_true', default=True)
-    # Original training parameters, persisted alongside the partitions so a
-    # missing model part can be reissued later without the original HTTP
-    # request (see scripts/reconciler.py).
-    parser.add_argument("--task-type", type=int, required=True)
-    parser.add_argument("--target-column", required=True)
-    parser.add_argument("--n-estimators", type=int, required=True)
 
     sys.exit(run_partitioning(parser.parse_args()))

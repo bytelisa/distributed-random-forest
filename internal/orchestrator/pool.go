@@ -109,9 +109,28 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 	}
 	numWorkers := len(activeWorkers)
 
+	// 1. PERSIST TRAIN REQUEST METADATA
+	// Immediately for fault tolerance
+		store, err := NewS3Store(ctx, storageCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create S3 client: %w", err)
+	}
+
+	trainRequest := TrainRequestMetadata{
+		DatasetURL:      req.DatasetUrl,
+		TaskType:        int32(req.TaskType),
+		TargetColumn:    req.TargetColumn,
+		NEstimators:     req.NEstimators,
+		TotalPartitions: int32(numWorkers),
+	}
+	metaKey := fmt.Sprintf("models/%s/train_request.json", req.ModelId)
+	if err := store.PutJSON(ctx, metaKey, trainRequest); err != nil {
+		return nil, fmt.Errorf("failed to persist train request metadata: %w", err)
+	}
+
 	log.Printf("[Orchestrator] Running partitioner script for model %s into %d parts...", req.ModelId, numWorkers)
 
-	// 1. RUN DATASET PARTITIONER
+	// 2. RUN DATASET PARTITIONER
 	// Execute the python script to prepare data on S3
 	cmd := exec.CommandContext(ctx, "python", "scripts/partitioner.py",
 		"--s3-endpoint", storageCfg.Endpoint,
@@ -121,9 +140,6 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 		"--source-key", req.DatasetUrl, // e.g., "data/iris.csv" (assuming we clean the s3:// prefix before)
 		"--model-id", req.ModelId,
 		"--num-partitions", fmt.Sprintf("%d", numWorkers),
-		"--task-type", fmt.Sprintf("%d", int32(req.TaskType)),
-		"--target-column", req.TargetColumn,
-		"--n-estimators", fmt.Sprintf("%d", req.NEstimators),
 	)
 
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -133,7 +149,7 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 	// DEBUG
 	log.Printf("[Orchestrator] Partitioner script finished successfully.")
 
-	// 2. DISTRIBUTE TRAINING TASKS
+	// 3. DISTRIBUTE TRAINING TASKS
 
 	// DEBUG
 	datasetFolder := fmt.Sprintf("models/%s/dataset_partitions/", req.ModelId)
