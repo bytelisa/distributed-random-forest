@@ -48,6 +48,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	// Routes
 	router.GET("/health", s.handleHealth)
 	router.POST("/train", s.handleTrain)
+	router.GET("/models/:model_id", s.handleModelStatus)
 	router.POST("/predict/:model_id", s.handlePredict)
 
 	return s, nil
@@ -71,8 +72,6 @@ func (s *Server) handleTrain(c *gin.Context) {
 		return
 	}
 
-	modelID := uuid.New().String()
-
 	var pbTaskType pb.TaskType
 	switch req.TaskType {
 	case "classification":
@@ -84,10 +83,7 @@ func (s *Server) handleTrain(c *gin.Context) {
 		return
 	}
 
-	// Read timeout from config file
-	timeout := time.Duration(s.config.System.TimeoutTraining) * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	modelID := uuid.New().String()
 
 	grpcReq := &pb.TrainRequest{
 		ModelId:      modelID,
@@ -97,25 +93,59 @@ func (s *Server) handleTrain(c *gin.Context) {
 		NEstimators:  int32(req.NEstimators),
 	}
 
-	// Call Distributed Training
-	orchestratorResp, err := s.workerPool.TrainDistributed(ctx, grpcReq, &s.config.Storage)
+	// Respond with the model_id right away: if the master crashes while
+	// training is still running, the client has already learned the ID it
+	// needs to check on later, instead of losing it along with the broken
+	// connection. The Auto Scaling Group-recovered master picks up any
+	// unfinished work on its own (see orchestrator.ReconcileIncompleteTrainings).
+	c.JSON(http.StatusAccepted, TrainResponse{
+		ModelID: modelID,
+		Status:  "training",
+		Message: "Training started.",
+	})
 
+	// The actual distributed training keeps running in the background
+	go func() {
+		timeout := time.Duration(s.config.System.TimeoutTraining) * time.Second
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+
+		orchestratorResp, err := s.workerPool.TrainDistributed(ctx, grpcReq, &s.config.Storage)
+		if err != nil {
+			log.Printf("[Master] Training %s failed: %v", modelID, err)
+			return
+		}
+		if !orchestratorResp.Success {
+			log.Printf("[Master] Training %s failed: %s", modelID, orchestratorResp.Message)
+			return
+		}
+		log.Printf("[Master] Training %s completed: %s", modelID, orchestratorResp.Message)
+	}()
+}
+
+// handleModelStatus reports the status of a previously requested training:
+// not found, still training, or ready for inference
+func (s *Server) handleModelStatus(c *gin.Context) {
+	modelID := c.Param("model_id")
+
+	timeout := time.Duration(s.config.System.TimeoutPrediction) * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	status, err := orchestrator.GetModelStatus(ctx, &s.config.Storage, modelID)
 	if err != nil {
-		// System error (e.g. no workers)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	if !orchestratorResp.Success {
-		// Logic error (one worker failed)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": orchestratorResp.Message})
+	if status == "not_found" {
+		c.JSON(http.StatusNotFound, gin.H{"error": "model not found", "model_id": modelID})
 		return
 	}
 
 	c.JSON(http.StatusOK, TrainResponse{
 		ModelID: modelID,
-		Status:  "completed",
-		Message: orchestratorResp.Message,
+		Status:  status,
 	})
 }
 
