@@ -193,14 +193,16 @@ func (p *WorkerPool) recoverMissingParts(ctx context.Context, cfg *config.Config
 	datasetFolder := fmt.Sprintf("models/%s/dataset_partitions/", m.ModelID)
 	trainTimeout := time.Duration(cfg.System.TimeoutTraining) * time.Second
 
-	for _, idx := range m.MissingIndices {
-		activeWorkers, err := p.getHealthyWorkers(ctx)
-		if err != nil {
-			log.Printf("[Reconciler] No healthy workers available to recover partition %d of model %s (will retry on next master startup): %v",
-				idx, m.ModelID, err)
-			continue
-		}
+	// Health-checked once for the whole model, not per missing index:
+	// avoids that two different missing indices land on the same worker by chance
+	activeWorkers, err := p.getHealthyWorkers(ctx)
+	if err != nil {
+		log.Printf("[Reconciler] No healthy workers available to recover model %s (will retry on next master startup): %v",
+			m.ModelID, err)
+		return
+	}
 
+	for _, idx := range m.MissingIndices {
 		// Any healthy worker can take it: workers are stateless and
 		// address dataset partitions/model parts by index.
 		worker := activeWorkers[int(idx)%len(activeWorkers)]
