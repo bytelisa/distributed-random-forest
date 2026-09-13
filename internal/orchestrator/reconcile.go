@@ -2,38 +2,54 @@ package orchestrator
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"os/exec"
+	"strings"
 	"time"
 
 	pb "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1"
 	"github.com/bytelisa/distributed-random-forest/internal/config"
 )
 
-// incompleteModel mirrors one entry of the JSON array printed by
-// scripts/reconciler.py on stdout.
+// incompleteModel describes one training that a scan of S3 found left
+// unfinished. TotalPartitions/MissingIndices are only populated when
+// Status is "training_incomplete".
 type incompleteModel struct {
-	ModelID         string  `json:"model_id"`
-	TaskType        int32   `json:"task_type"`
-	TargetColumn    string  `json:"target_column"`
-	NEstimators     int32   `json:"n_estimators"`
-	TotalPartitions int32   `json:"total_partitions"`
-	MissingIndices  []int32 `json:"missing_indices"`
+	ModelID         string
+	Status          string
+	DatasetURL      string
+	TaskType        int32
+	TargetColumn    string
+	NEstimators     int32
+	TotalPartitions int32
+	MissingIndices  []int32
 }
 
 // ReconcileIncompleteTrainings looks for trainings left incomplete by a
-// master crash (dataset partitioning finished, but not every worker's
-// model part uploaded on S3) and reissues training for the missing
-// partitions on currently healthy workers.
+// master crash and finishes them, using only what's on S3 - it never
+// needs the original HTTP request.
 //
-// This is the master-side half of the cold standby recovery path: runs once,
-// in the background, right after the new master starts.
-// Models whose dataset partitioning never completed (no train_request.json on S3)
-// are intentionally left alone here.
+// This is the master-side half of the cold standby recovery path: it runs
+// once, in the background, right after the new master starts. A model can
+// be incomplete in one of two ways (see findIncompleteModels):
+//   - "partitioning_incomplete": the crash happened before dataset
+//     partitioning finished. Recovered by re-running the whole
+//     TrainDistributed flow for that model_id, which also refreshes how
+//     many partitions to use based on whichever workers are healthy now.
+//   - "training_incomplete": partitioning finished, but not every worker's
+//     model part made it to S3. Recovered by reissuing training for just
+//     the missing partitions.
+//
+// Models with no train_request.json at all are intentionally left alone -
+// too narrow a crash window to recover from (see report.md §5).
 func (p *WorkerPool) ReconcileIncompleteTrainings(ctx context.Context, cfg *config.Config) {
-	incomplete, err := listIncompleteModels(ctx, &cfg.Storage)
+	store, err := NewS3Store(ctx, &cfg.Storage)
+	if err != nil {
+		log.Printf("[Reconciler] Failed to create S3 client: %v", err)
+		return
+	}
+
+	incomplete, err := findIncompleteModels(ctx, store)
 	if err != nil {
 		log.Printf("[Reconciler] Failed to check for incomplete trainings: %v", err)
 		return
@@ -44,72 +60,172 @@ func (p *WorkerPool) ReconcileIncompleteTrainings(ctx context.Context, cfg *conf
 		return
 	}
 
-	trainTimeout := time.Duration(cfg.System.TimeoutTraining) * time.Second
-
 	for _, m := range incomplete {
-		log.Printf("[Reconciler] Model %s is missing partitions %v out of %d - reassigning.",
-			m.ModelID, m.MissingIndices, m.TotalPartitions)
-
-		datasetFolder := fmt.Sprintf("models/%s/dataset_partitions/", m.ModelID)
-
-		for _, idx := range m.MissingIndices {
-			activeWorkers, err := p.getHealthyWorkers(ctx)
-			if err != nil {
-				log.Printf("[Reconciler] No healthy workers available to recover partition %d of model %s (will retry on next master startup): %v",
-					idx, m.ModelID, err)
-				continue
-			}
-
-			// Any healthy worker can take it: workers are stateless and
-			// address dataset partitions/model parts by index, not by
-			// identity. Spread across healthy workers if several parts
-			// are missing at once.
-			worker := activeWorkers[int(idx)%len(activeWorkers)]
-
-			workerReq := &pb.TrainRequest{
-				ModelId:      m.ModelID,
-				DatasetUrl:   datasetFolder,
-				TaskType:     pb.TaskType(m.TaskType),
-				TargetColumn: m.TargetColumn,
-				NEstimators:  m.NEstimators,
-				WorkerIndex:  idx,
-				TotalWorkers: m.TotalPartitions,
-			}
-
-			trainCtx, cancel := context.WithTimeout(ctx, trainTimeout)
-			resp, err := worker.Client.Train(trainCtx, workerReq)
-			cancel()
-
-			if err != nil || !resp.Success {
-				log.Printf("[Reconciler] Failed to recover partition %d of model %s on worker %s (will retry on next master startup): %v",
-					idx, m.ModelID, worker.Address, err)
-				continue
-			}
-
-			log.Printf("[Reconciler] Recovered partition %d of model %s on worker %s.", idx, m.ModelID, worker.Address)
+		switch m.Status {
+		case "partitioning_incomplete":
+			p.recoverPartitioning(ctx, cfg, m)
+		case "training_incomplete":
+			p.recoverMissingParts(ctx, cfg, m)
+		default:
+			log.Printf("[Reconciler] Model %s reported with unknown status %q, skipping.", m.ModelID, m.Status)
 		}
 	}
 }
 
-// listIncompleteModels runs scripts/reconciler.py, which only reads S3 and reports, for every model whose
-// dataset partitioning completed, which model part indices are still missing.
-func listIncompleteModels(ctx context.Context, storageCfg *config.StorageConfig) ([]incompleteModel, error) {
-	cmd := exec.CommandContext(ctx, "python", "scripts/reconciler.py",
-		"--s3-endpoint", storageCfg.Endpoint,
-		"--s3-access-key", storageCfg.AccessKey,
-		"--s3-secret-key", storageCfg.SecretKey,
-		"--s3-bucket", storageCfg.Bucket,
-	)
-
-	output, err := cmd.Output()
+// findIncompleteModels scans S3 (read-only, never writes or dispatches
+// training itself) and reports, for every model_id with train_request.json
+// on S3, whether partitioning or training is still incomplete.
+func findIncompleteModels(ctx context.Context, store *S3Store) ([]incompleteModel, error) {
+	prefixes, err := store.ListCommonPrefixes(ctx, "models/")
 	if err != nil {
-		return nil, fmt.Errorf("reconciler script failed: %w", err)
+		return nil, err
 	}
 
 	var incomplete []incompleteModel
-	if err := json.Unmarshal(output, &incomplete); err != nil {
-		return nil, fmt.Errorf("failed to parse reconciler output: %w", err)
+	for _, prefix := range prefixes {
+		modelID := strings.TrimSuffix(strings.TrimPrefix(prefix, "models/"), "/")
+		if modelID == "" {
+			continue
+		}
+
+		var meta TrainRequestMetadata
+		found, err := store.GetJSON(ctx, fmt.Sprintf("models/%s/train_request.json", modelID), &meta)
+		if err != nil {
+			log.Printf("[Reconciler] Failed to read metadata for model %s, skipping: %v", modelID, err)
+			continue
+		}
+		if !found {
+			// No metadata at all: too narrow a crash window (right after
+			// computing how many workers are healthy, before that write
+			// finishes) to recover from automatically.
+			continue
+		}
+
+		// Stage 1: is partitioning itself done?
+		partitionKeys, err := store.ListKeys(ctx, fmt.Sprintf("models/%s/dataset_partitions/", modelID))
+		if err != nil {
+			log.Printf("[Reconciler] Failed to list dataset partitions for model %s, skipping: %v", modelID, err)
+			continue
+		}
+
+		if int32(len(partitionKeys)) < meta.TotalPartitions {
+			incomplete = append(incomplete, incompleteModel{
+				ModelID:      modelID,
+				Status:       "partitioning_incomplete",
+				DatasetURL:   meta.DatasetURL,
+				TaskType:     meta.TaskType,
+				TargetColumn: meta.TargetColumn,
+				NEstimators:  meta.NEstimators,
+			})
+			continue
+		}
+
+		// Stage 2: partitioning is done, is every model part there?
+		modelPartKeys, err := store.ListKeys(ctx, fmt.Sprintf("models/%s/model_parts/", modelID))
+		if err != nil {
+			log.Printf("[Reconciler] Failed to list model parts for model %s, skipping: %v", modelID, err)
+			continue
+		}
+
+		present := make(map[int32]bool)
+		for _, key := range modelPartKeys {
+			if idx, ok := parsePartitionIndex(key); ok {
+				present[idx] = true
+			}
+		}
+
+		var missing []int32
+		for i := int32(0); i < meta.TotalPartitions; i++ {
+			if !present[i] {
+				missing = append(missing, i)
+			}
+		}
+
+		if len(missing) > 0 {
+			incomplete = append(incomplete, incompleteModel{
+				ModelID:         modelID,
+				Status:          "training_incomplete",
+				DatasetURL:      meta.DatasetURL,
+				TaskType:        meta.TaskType,
+				TargetColumn:    meta.TargetColumn,
+				NEstimators:     meta.NEstimators,
+				TotalPartitions: meta.TotalPartitions,
+				MissingIndices:  missing,
+			})
+		}
 	}
 
 	return incomplete, nil
+}
+
+// recoverPartitioning redoes dataset partitioning (and the subsequent
+// training dispatch) for a model whose partitioning never completed. It's
+// the exact same flow as a brand new training request, just reusing the
+// existing model_id instead of generating a new one.
+func (p *WorkerPool) recoverPartitioning(ctx context.Context, cfg *config.Config, m incompleteModel) {
+	log.Printf("[Reconciler] Model %s never finished partitioning - restarting it from scratch.", m.ModelID)
+
+	req := &pb.TrainRequest{
+		ModelId:      m.ModelID,
+		DatasetUrl:   m.DatasetURL,
+		TaskType:     pb.TaskType(m.TaskType),
+		TargetColumn: m.TargetColumn,
+		NEstimators:  m.NEstimators,
+	}
+
+	resp, err := p.TrainDistributed(ctx, req, &cfg.Storage)
+	if err != nil || !resp.Success {
+		log.Printf("[Reconciler] Failed to restart partitioning for model %s (will retry on next master startup): %v", m.ModelID, err)
+		return
+	}
+
+	log.Printf("[Reconciler] Model %s fully recovered.", m.ModelID)
+}
+
+// recoverMissingParts reissues training for the specific partitions of a
+// model that are missing a model part, without touching the ones already
+// done.
+func (p *WorkerPool) recoverMissingParts(ctx context.Context, cfg *config.Config, m incompleteModel) {
+	log.Printf("[Reconciler] Model %s is missing partitions %v out of %d - reassigning.",
+		m.ModelID, m.MissingIndices, m.TotalPartitions)
+
+	datasetFolder := fmt.Sprintf("models/%s/dataset_partitions/", m.ModelID)
+	trainTimeout := time.Duration(cfg.System.TimeoutTraining) * time.Second
+
+	for _, idx := range m.MissingIndices {
+		activeWorkers, err := p.getHealthyWorkers(ctx)
+		if err != nil {
+			log.Printf("[Reconciler] No healthy workers available to recover partition %d of model %s (will retry on next master startup): %v",
+				idx, m.ModelID, err)
+			continue
+		}
+
+		// Any healthy worker can take it: workers are stateless and
+		// address dataset partitions/model parts by index, not by
+		// identity. Spread across healthy workers if several parts are
+		// missing at once.
+		worker := activeWorkers[int(idx)%len(activeWorkers)]
+
+		workerReq := &pb.TrainRequest{
+			ModelId:      m.ModelID,
+			DatasetUrl:   datasetFolder,
+			TaskType:     pb.TaskType(m.TaskType),
+			TargetColumn: m.TargetColumn,
+			NEstimators:  m.NEstimators,
+			WorkerIndex:  idx,
+			TotalWorkers: m.TotalPartitions,
+		}
+
+		trainCtx, cancel := context.WithTimeout(ctx, trainTimeout)
+		resp, err := worker.Client.Train(trainCtx, workerReq)
+		cancel()
+
+		if err != nil || !resp.Success {
+			log.Printf("[Reconciler] Failed to recover partition %d of model %s on worker %s (will retry on next master startup): %v",
+				idx, m.ModelID, worker.Address, err)
+			continue
+		}
+
+		log.Printf("[Reconciler] Recovered partition %d of model %s on worker %s.", idx, m.ModelID, worker.Address)
+	}
 }
