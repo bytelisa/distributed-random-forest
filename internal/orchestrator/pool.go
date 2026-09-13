@@ -130,6 +130,7 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 		TargetColumn:    req.TargetColumn,
 		NEstimators:     req.NEstimators,
 		TotalPartitions: int32(numWorkers),
+		Hyperparameters: req.Hyperparameters,
 	}
 	metaKey := fmt.Sprintf("models/%s/train_request.json", req.ModelId)
 	if err := store.PutJSON(ctx, metaKey, trainRequest); err != nil {
@@ -168,13 +169,14 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 			log.Printf("[Orchestrator] Sending Train request to Worker %d: %d trees on dataset folder.", idx, req.NEstimators)
 
 			workerReq := &pb.TrainRequest{
-				ModelId:      req.ModelId,
-				DatasetUrl:   datasetFolder,
-				TaskType:     req.TaskType,
-				TargetColumn: req.TargetColumn,
-				NEstimators:  req.NEstimators, // Each worker trains a FULL forest (e.g., 100 trees)
-				WorkerIndex:  int32(idx),
-				TotalWorkers: int32(numWorkers),
+				ModelId:         req.ModelId,
+				DatasetUrl:      datasetFolder,
+				TaskType:        req.TaskType,
+				TargetColumn:    req.TargetColumn,
+				NEstimators:     req.NEstimators, // Each worker trains a FULL forest (e.g., 100 trees)
+				Hyperparameters: req.Hyperparameters,
+				WorkerIndex:     int32(idx),
+				TotalWorkers:    int32(numWorkers),
 			}
 
 			resp, err := w.Client.Train(ctx, workerReq)

@@ -11,6 +11,30 @@ from services.worker.config import load_config
 # which implement the interface worker.proto in python.
 
 
+def _coerce_hyperparameter(value: str):
+    """
+    Converts a hyperparameter value back from its string form to the Python type scikit-learn
+    expects. Generic on purpose: the master already validated which keys
+    and values are allowed (internal/api/hyperparameters.go), so this
+    only needs to undo the string conversion, not re-validate anything
+    """
+    if value == "None":
+        return None
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    return value  # plain string, e.g. "sqrt", "gini", "balanced"
+
+
 class WorkerService(worker_pb2_grpc.WorkerServicer):
     def __init__(self, worker_id):
         # Load config
@@ -83,12 +107,20 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
             # DEBUG: Prove data parallelism is working
             print(f"[Worker {request.worker_index}] Loaded dataset partition successfully. Shape: {df.shape[0]} rows, {df.shape[1]} columns.")
 
-            # Train a full forest on this dataset slice
+            # Train a full forest on this dataset slice.
+            # Extra hyperparameters arrive as strings (protobuf map values
+            # can't be mixed types) and are coerced back to the right
+            # Python type here - the master already validated the keys and
+            # value shapes before sending, so this is a generic conversion,
+            # not a second round of semantic checks.
+            hyperparams = {k: _coerce_hyperparameter(v) for k, v in request.hyperparameters.items()}
+
             trained_model = ml_model.train_model(
                 data=df,
                 target_column=request.target_column,
                 task_type=self._convert_type(request.task_type),
-                n_estimators=request.n_estimators
+                n_estimators=request.n_estimators,
+                **hyperparams
             )
 
             # 4. SAVE MODEL PART TO S3

@@ -96,20 +96,28 @@ func (s *Server) handleTrain(c *gin.Context) {
 		return
 	}
 
+	// Validate hyperparameters before anything else
+	hyperparams, err := validateHyperparameters(req.Hyperparams, req.TaskType)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	modelID := uuid.New().String()
 
 	grpcReq := &pb.TrainRequest{
-		ModelId:      modelID,
-		DatasetUrl:   req.DatasetURL,
-		TaskType:     pbTaskType,
-		TargetColumn: req.TargetColumn,
-		NEstimators:  int32(req.NEstimators),
+		ModelId:         modelID,
+		DatasetUrl:      req.DatasetURL,
+		TaskType:        pbTaskType,
+		TargetColumn:    req.TargetColumn,
+		NEstimators:     int32(req.NEstimators),
+		Hyperparameters: hyperparams,
 	}
 
 	// Respond with the model_id right away: if the master crashes while
 	// training is still running, the client has already learned the ID it
 	// needs to check on later, instead of losing it along with the broken
-	// connection. The Auto Scaling Group-recovered master picks up any
+	// connection. The ASG-recovered master picks up any
 	// unfinished work on its own (see orchestrator.ReconcileIncompleteTrainings).
 	c.JSON(http.StatusAccepted, TrainResponse{
 		ModelID: modelID,

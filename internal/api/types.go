@@ -4,11 +4,11 @@ package api
 
 // TrainRequest represents the JSON body received in POST /train
 type TrainRequest struct {
-	DatasetURL   string         `json:"dataset_url" binding:"required"`
-	TaskType     string         `json:"task_type" binding:"required,oneof=classification regression"`
-	TargetColumn string         `json:"target_column" binding:"required"`
-	NEstimators  int            `json:"n_estimators"` // Optional, default handled in logic
-	Hyperparams  map[string]int `json:"hyperparameters"`
+	DatasetURL   string                 `json:"dataset_url" binding:"required"`
+	TaskType     string                 `json:"task_type" binding:"required,oneof=classification regression"`
+	TargetColumn string                 `json:"target_column" binding:"required"`
+	NEstimators  int                    `json:"n_estimators"` // Optional, default handled in logic
+	Hyperparams  map[string]interface{} `json:"hyperparameters"`
 }
 
 // TrainResponse represents the JSON response for POST /train

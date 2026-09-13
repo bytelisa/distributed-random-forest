@@ -37,7 +37,7 @@ message TrainRequest {
 
   // RandomForest hyperparameters
   int32 n_estimators = 4;
-  int32 max_depht = 5;
+  reserved 5;
 
   string target_column = 6;
 
@@ -47,6 +47,14 @@ message TrainRequest {
   // NEW: Fields for deterministic dataset partitioning
   int32 worker_index = 8;
   int32 total_workers = 9;
+
+  // Additional RandomForest hyperparameters (max_depth, max_features,
+  // min_samples_split, min_samples_leaf, bootstrap, max_samples, criterion,
+  // max_leaf_nodes, class_weight, oob_score), validated and converted to
+  // strings by the master (internal/api) before being sent here. The
+  // worker converts each value back to the right Python type generically
+  // and forwards them as kwargs to scikit-learn.
+  map<string, string> hyperparameters = 10;
 }
 
 message TrainResponse {

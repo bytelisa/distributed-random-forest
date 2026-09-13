@@ -21,6 +21,7 @@ type incompleteModel struct {
 	TaskType        int32
 	TargetColumn    string
 	NEstimators     int32
+	Hyperparameters map[string]string
 	TotalPartitions int32
 	MissingIndices  []int32
 }
@@ -109,12 +110,13 @@ func findIncompleteModels(ctx context.Context, store *S3Store) ([]incompleteMode
 
 		if int32(len(partitionKeys)) < meta.TotalPartitions {
 			incomplete = append(incomplete, incompleteModel{
-				ModelID:      modelID,
-				Status:       "partitioning_incomplete",
-				DatasetURL:   meta.DatasetURL,
-				TaskType:     meta.TaskType,
-				TargetColumn: meta.TargetColumn,
-				NEstimators:  meta.NEstimators,
+				ModelID:         modelID,
+				Status:          "partitioning_incomplete",
+				DatasetURL:      meta.DatasetURL,
+				TaskType:        meta.TaskType,
+				TargetColumn:    meta.TargetColumn,
+				NEstimators:     meta.NEstimators,
+				Hyperparameters: meta.Hyperparameters,
 			})
 			continue
 		}
@@ -148,6 +150,7 @@ func findIncompleteModels(ctx context.Context, store *S3Store) ([]incompleteMode
 				TaskType:        meta.TaskType,
 				TargetColumn:    meta.TargetColumn,
 				NEstimators:     meta.NEstimators,
+				Hyperparameters: meta.Hyperparameters,
 				TotalPartitions: meta.TotalPartitions,
 				MissingIndices:  missing,
 			})
@@ -167,11 +170,12 @@ func (p *WorkerPool) recoverPartitioning(ctx context.Context, cfg *config.Config
 	log.Printf("[Reconciler] Model %s never finished partitioning - restarting it from scratch.", m.ModelID)
 
 	req := &pb.TrainRequest{
-		ModelId:      m.ModelID,
-		DatasetUrl:   m.DatasetURL,
-		TaskType:     pb.TaskType(m.TaskType),
-		TargetColumn: m.TargetColumn,
-		NEstimators:  m.NEstimators,
+		ModelId:         m.ModelID,
+		DatasetUrl:      m.DatasetURL,
+		TaskType:        pb.TaskType(m.TaskType),
+		TargetColumn:    m.TargetColumn,
+		NEstimators:     m.NEstimators,
+		Hyperparameters: m.Hyperparameters,
 	}
 
 	resp, err := p.TrainDistributed(ctx, req, &cfg.Storage)
@@ -208,13 +212,14 @@ func (p *WorkerPool) recoverMissingParts(ctx context.Context, cfg *config.Config
 		worker := activeWorkers[int(idx)%len(activeWorkers)]
 
 		workerReq := &pb.TrainRequest{
-			ModelId:      m.ModelID,
-			DatasetUrl:   datasetFolder,
-			TaskType:     pb.TaskType(m.TaskType),
-			TargetColumn: m.TargetColumn,
-			NEstimators:  m.NEstimators,
-			WorkerIndex:  idx,
-			TotalWorkers: m.TotalPartitions,
+			ModelId:         m.ModelID,
+			DatasetUrl:      datasetFolder,
+			TaskType:        pb.TaskType(m.TaskType),
+			TargetColumn:    m.TargetColumn,
+			NEstimators:     m.NEstimators,
+			Hyperparameters: m.Hyperparameters,
+			WorkerIndex:     idx,
+			TotalWorkers:    m.TotalPartitions,
 		}
 
 		trainCtx, cancel := context.WithTimeout(ctx, trainTimeout)

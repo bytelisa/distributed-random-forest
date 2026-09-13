@@ -43,7 +43,7 @@ def load_dataset(dataset_path: str) -> pd.DataFrame:
         raise ModelError(f"[Model] Could not load dataset from {dataset_path}: {e}")
 
 
-def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estimators: int, random_seed=None) -> Union[RandomForestClassifier, RandomForestRegressor]:
+def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estimators: int, random_seed=None, **hyperparameters) -> Union[RandomForestClassifier, RandomForestRegressor]:
     """
     Trains a RandomForest model.
     """
@@ -87,11 +87,15 @@ def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estima
 
     print(f"[Model] Training {n_estimators} trees using Random State: {seed}")
 
-    # 6. MODEL INITIALIZATION todo choose better initialization
+    # 6. MODEL INITIALIZATION
+    # Extra hyperparameters (max_depth, max_features, min_samples_split,
+    # min_samples_leaf, bootstrap, max_samples, criterion, max_leaf_nodes,
+    # class_weight, oob_score) are forwarded to scikit-learn, already
+    # validated by the master (in internal/api/hyperparameters.go)
     if task_type == 'classification':
-        model = RandomForestClassifier(n_estimators=n_estimators, random_state=seed, n_jobs=1)
+        model = RandomForestClassifier(n_estimators=n_estimators, random_state=seed, n_jobs=1, **hyperparameters)
     elif task_type == 'regression':
-        model = RandomForestRegressor(n_estimators=n_estimators, random_state=seed, n_jobs=1)
+        model = RandomForestRegressor(n_estimators=n_estimators, random_state=seed, n_jobs=1, **hyperparameters)
     else:
         raise ModelError(f"Invalid task type '{task_type}'. Choose 'classification' or 'regression'.")
 
