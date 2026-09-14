@@ -171,11 +171,11 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
             if not s3_keys:
                 # No file found
-                return worker_pb2.PredictResponse(prediction="")
+                return worker_pb2.PredictResponse()
 
             if request.total_workers <= 0:
                 print(f"[Error Predict] Invalid total_workers: {request.total_workers}")
-                return worker_pb2.PredictResponse(prediction="") # O alza eccezione
+                return worker_pb2.PredictResponse()
 
             # 2. DETERMINISTIC PARTITIONING OF TRAINED TREES
             # Order files to have consistent partitioning across all workers
@@ -189,7 +189,7 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
 
             if not my_files:
                 print(f"[Worker] No files assigned to me (found {len(s3_keys)} total).")
-                return worker_pb2.PredictResponse(prediction="")
+                return worker_pb2.PredictResponse()
 
             print(f"[Worker] Assigned {len(my_files)} files out of {len(s3_keys)} total.")
 
