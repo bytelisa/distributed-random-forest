@@ -9,6 +9,7 @@ package orchestrator_test
 
 import (
 	"context"
+	"sort"
 	"testing"
 
 	pb "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1"
@@ -20,24 +21,50 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const healthTimeoutSeconds = 2
-
 func newPool(t *testing.T, addrs ...string) *orchestrator.WorkerPool {
 	t.Helper()
-	pool, err := orchestrator.NewWorkerPool(addrs, healthTimeoutSeconds)
+	sys := testutil.NewTestSystemConfig()
+	pool, err := orchestrator.NewWorkerPool(addrs, &sys)
 	require.NoError(t, err)
-	pool.PartitionDataset = testutil.FakePartitionDataset
 	return pool
 }
 
-func newTrainRequest(modelID string) *pb.TrainRequest {
-	return &pb.TrainRequest{
-		ModelId:      modelID,
-		DatasetUrl:   "data/iris.csv",
+func newTrainJob(modelID string, nEstimators int32) orchestrator.TrainJob {
+	return orchestrator.TrainJob{
+		ModelID:      modelID,
+		DatasetURL:   "data/iris.csv",
 		TaskType:     pb.TaskType_CLASSIFICATION_TASK,
 		TargetColumn: "target",
-		NEstimators:  10,
+		NEstimators:  nEstimators,
 	}
+}
+
+// requestedTrees flattens the tree indices of every Train call received.
+func requestedTrees(calls []*pb.TrainRequest) []int32 {
+	var all []int32
+	for _, c := range calls {
+		all = append(all, c.TreeIndices...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
+	return all
+}
+
+// predictedTrees flattens the tree indices of every Predict call received.
+func predictedTrees(calls []*pb.PredictRequest) []int32 {
+	var all []int32
+	for _, c := range calls {
+		all = append(all, c.TreeIndices...)
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
+	return all
+}
+
+func indices(n int32) []int32 {
+	out := make([]int32, n)
+	for i := range out {
+		out[i] = int32(i)
+	}
+	return out
 }
 
 // ---------------------------------------------------------------------
@@ -45,6 +72,8 @@ func newTrainRequest(modelID string) *pb.TrainRequest {
 // ---------------------------------------------------------------------
 
 func TestA3_NewWorkerPool(t *testing.T) {
+	sys := testutil.NewTestSystemConfig()
+
 	t.Run("creates a client entry for every configured address, even unreachable ones", func(t *testing.T) {
 		// grpc.NewClient dials lazily: it never fails at construction time
 		// just because nothing is listening on an address yet - that's only
@@ -52,13 +81,13 @@ func TestA3_NewWorkerPool(t *testing.T) {
 		w1 := testutil.NewFakeWorker(t)
 		unreachable := testutil.UnreachableAddress(t)
 
-		pool, err := orchestrator.NewWorkerPool([]string{w1.Address, unreachable}, healthTimeoutSeconds)
+		pool, err := orchestrator.NewWorkerPool([]string{w1.Address, unreachable}, &sys)
 		require.NoError(t, err)
 		assert.Len(t, pool.Workers, 2)
 	})
 
 	t.Run("no addresses at all returns an explicit error", func(t *testing.T) {
-		_, err := orchestrator.NewWorkerPool(nil, healthTimeoutSeconds)
+		_, err := orchestrator.NewWorkerPool(nil, &sys)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no workers available")
 	})
@@ -76,21 +105,17 @@ func TestC1_UnreachableWorkerExcludedFromTrain(t *testing.T) {
 
 	fakeS3 := testutil.NewFakeS3(t)
 	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
+	healthy.TrainFunc = testutil.TrainFuncUploadingTrees(&storageCfg)
 
-	req := newTrainRequest("model-c1")
-	resp, err := pool.TrainDistributed(context.Background(), req, &storageCfg)
+	resp, err := pool.TrainDistributed(context.Background(), newTrainJob("model-c1", 5), &storageCfg)
 	require.NoError(t, err)
 	require.True(t, resp.Success, resp.Message)
 
-	// Only the healthy worker should have been asked to train, indexed 0
-	// out of a total of 1 (the unreachable one doesn't count).
+	// The whole forest went to the only healthy worker: all 5 trees in one call.
 	calls := healthy.TrainCalls()
 	require.Len(t, calls, 1)
-	assert.Equal(t, int32(0), calls[0].WorkerIndex)
-	assert.Equal(t, int32(1), calls[0].TotalWorkers)
-
-	// The dataset was partitioned into 1 part accordingly, not 2.
-	assert.Len(t, fakeS3.Keys("models/model-c1/dataset_partitions/"), 1)
+	assert.Equal(t, indices(5), calls[0].TreeIndices)
+	assert.Equal(t, "data/iris.csv", calls[0].DatasetUrl, "every worker gets the full training set, not a partition")
 }
 
 // ---------------------------------------------------------------------
@@ -98,7 +123,7 @@ func TestC1_UnreachableWorkerExcludedFromTrain(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestC2_WorkerDiesDuringTrain(t *testing.T) {
-	t.Run("no healthy peer available: the whole call fails, but state is persisted for later reconciliation", func(t *testing.T) {
+	t.Run("no healthy peer: retries are exhausted, the model is marked failed and stays recoverable", func(t *testing.T) {
 		crashing := testutil.NewFakeWorker(t)
 		crashing.TrainFunc = func(_ context.Context, _ *pb.TrainRequest) (*pb.TrainResponse, error) {
 			return nil, status.Error(codes.Unavailable, "worker process crashed")
@@ -109,55 +134,71 @@ func TestC2_WorkerDiesDuringTrain(t *testing.T) {
 		fakeS3 := testutil.NewFakeS3(t)
 		storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
 
-		req := newTrainRequest("model-c2")
-		resp, err := pool.TrainDistributed(context.Background(), req, &storageCfg)
+		resp, err := pool.TrainDistributed(context.Background(), newTrainJob("model-c2", 4), &storageCfg)
 
 		// The call itself doesn't error out (TrainDistributed reports failure
-		// via resp.Success, not via err). With only one worker configured,
-		// there's no healthy peer to reassign the failed partition to (see
-		// the subtest below for the case where there is one).
+		// via resp.Success, not via err).
 		require.NoError(t, err)
 		assert.False(t, resp.Success)
-		assert.Contains(t, resp.Message, "failed")
+		assert.Contains(t, resp.Message, "giving up")
 
-		// The metadata is persisted before dispatching training, so the model
-		// stays visible to a future reconciliation pass as training_incomplete,
-		// even though this synchronous call reported failure.
+		// With a single worker, every retry lands on it again: 1 attempt + MaxRetriesPerTree.
+		assert.Len(t, crashing.TrainCalls(), 1+pool.MaxRetriesPerTree)
+
+		// The metadata is persisted before dispatching training, and the failure
+		// is recorded, so GET /models/{id} reports it and a future
+		// reconciliation pass can still pick the model up.
 		assert.True(t, fakeS3.Has("models/model-c2/train_request.json"))
+		st, err := orchestrator.GetModelStatus(context.Background(), &storageCfg, "model-c2")
+		require.NoError(t, err)
+		assert.Equal(t, "failed", st.Status)
+		assert.Contains(t, st.Message, "giving up")
 	})
 
-	t.Run("a healthy peer is available: the failed partition is retried and reassigned within the same call", func(t *testing.T) {
+	t.Run("a healthy peer is available: only the trees still missing are reassigned within the same call", func(t *testing.T) {
+		fakeS3 := testutil.NewFakeS3(t)
+		storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
+		upload := testutil.TrainFuncUploadingTrees(&storageCfg)
+
 		ok := testutil.NewFakeWorker(t)
+		ok.TrainFunc = upload
+
+		// Uploads the first tree of its chunk, then dies.
 		crashing := testutil.NewFakeWorker(t)
-		crashing.TrainFunc = func(_ context.Context, _ *pb.TrainRequest) (*pb.TrainResponse, error) {
+		crashing.TrainFunc = func(ctx context.Context, req *pb.TrainRequest) (*pb.TrainResponse, error) {
+			first := &pb.TrainRequest{ModelId: req.ModelId, TreeIndices: req.TreeIndices[:1]}
+			if _, err := upload(ctx, first); err != nil {
+				return nil, err
+			}
 			return nil, status.Error(codes.Unavailable, "worker process crashed")
 		}
 
 		pool := newPool(t, ok.Address, crashing.Address)
 
-		fakeS3 := testutil.NewFakeS3(t)
-		storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
-
-		req := newTrainRequest("model-c2b")
-		resp, err := pool.TrainDistributed(context.Background(), req, &storageCfg)
+		resp, err := pool.TrainDistributed(context.Background(), newTrainJob("model-c2b", 6), &storageCfg)
 		require.NoError(t, err)
-
-		// With a healthy peer available, the failed partition is retried on it
-		// within the same call - no need to wait for a master restart.
 		require.True(t, resp.Success, resp.Message)
 
-		// The crashing worker was asked once, for its own partition, and failed.
+		// The crashing worker was asked once, for its 3 trees.
 		crashingCalls := crashing.TrainCalls()
 		require.Len(t, crashingCalls, 1)
+		require.Len(t, crashingCalls[0].TreeIndices, 3)
+		uploadedBeforeCrash := crashingCalls[0].TreeIndices[0]
 
-		// The healthy worker was asked twice: once for its own partition, once
-		// (the retry) for the crashing worker's partition - same WorkerIndex as
-		// the failed attempt, since partitions are addressed by index, not by
-		// which physical worker handles them.
+		// The healthy worker got its own 3 trees, plus a retry carrying only
+		// the 2 trees the crashing worker never uploaded.
 		okCalls := ok.TrainCalls()
 		require.Len(t, okCalls, 2)
-		gotIndices := []int32{okCalls[0].WorkerIndex, okCalls[1].WorkerIndex}
-		assert.ElementsMatch(t, []int32{0, 1}, gotIndices, "the healthy worker should cover both partition indices between its own call and the retry")
+		retry := okCalls[1]
+		assert.Len(t, retry.TreeIndices, 2)
+		assert.NotContains(t, retry.TreeIndices, uploadedBeforeCrash, "a tree already on S3 is not retrained")
+
+		// Every tree of the forest is on S3 exactly once, and the model is ready.
+		assert.Len(t, fakeS3.Keys("models/model-c2b/model_parts/"), 6)
+		st, err := orchestrator.GetModelStatus(context.Background(), &storageCfg, "model-c2b")
+		require.NoError(t, err)
+		assert.Equal(t, "ready", st.Status)
+		assert.False(t, fakeS3.Has("models/model-c2b/training_failed.json"))
 	})
 }
 
@@ -166,31 +207,33 @@ func TestC2_WorkerDiesDuringTrain(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestC3_PredictAllWorkersHealthy(t *testing.T) {
+	fakeS3 := testutil.NewFakeS3(t)
+	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
+	store, err := orchestrator.NewS3Store(context.Background(), &storageCfg)
+	require.NoError(t, err)
+	require.NoError(t, testutil.SeedTrainedModel(context.Background(), store, "model-c3", 4))
+
 	w0 := testutil.NewFakeWorker(t)
-	w0.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
-		return &pb.PredictResponse{Predictions: []string{"1", "1"}}, nil
-	}
+	w0.PredictFunc = testutil.PredictFuncReturning(testutil.ClassVote("1"))
 	w1 := testutil.NewFakeWorker(t)
-	w1.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
-		return &pb.PredictResponse{Predictions: []string{"1", "0"}}, nil
-	}
+	w1.PredictFunc = testutil.PredictFuncReturning(&pb.TreePrediction{Classes: []string{"0", "1"}, Probabilities: []float64{0.6, 0.4}})
 
 	pool := newPool(t, w0.Address, w1.Address)
 
 	req := &pb.PredictRequest{ModelId: "model-c3", Features: []float32{1, 2, 3}}
-	result, err := pool.PredictDistributed(context.Background(), req, "classification")
+	result, err := pool.PredictDistributed(context.Background(), req, "classification", &storageCfg)
 	require.NoError(t, err)
-	assert.Equal(t, "1", result, "3 votes for \"1\" vs 1 for \"0\"")
+	assert.Equal(t, "1", result, "\"1\": 2*1.0 + 2*0.4 = 2.8 vs \"0\": 2*0.6 = 1.2")
 
-	// Each worker gets a distinct index out of a total of 2. Which worker
-	// gets which index isn't guaranteed: getHealthyWorkers health-checks
-	// concurrently and appends as each goroutine finishes, so the order
-	// isn't tied to the order addresses were configured in.
+	// The 4 trees are split between the 2 workers, 2 each, covering every
+	// index exactly once. Which worker gets which chunk isn't guaranteed:
+	// getHealthyWorkers health-checks concurrently and appends as each
+	// goroutine finishes, so the order isn't tied to the configured one.
 	require.Len(t, w0.PredictCalls(), 1)
 	require.Len(t, w1.PredictCalls(), 1)
-	assert.Equal(t, int32(2), w0.PredictCalls()[0].TotalWorkers)
-	assert.Equal(t, int32(2), w1.PredictCalls()[0].TotalWorkers)
-	assert.ElementsMatch(t, []int32{0, 1}, []int32{w0.PredictCalls()[0].WorkerIndex, w1.PredictCalls()[0].WorkerIndex})
+	assert.Len(t, w0.PredictCalls()[0].TreeIndices, 2)
+	assert.Len(t, w1.PredictCalls()[0].TreeIndices, 2)
+	assert.Equal(t, indices(4), predictedTrees(append(w0.PredictCalls(), w1.PredictCalls()...)))
 }
 
 // ---------------------------------------------------------------------
@@ -198,11 +241,15 @@ func TestC3_PredictAllWorkersHealthy(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestC4_WorkerDiesDuringPredict(t *testing.T) {
-	t.Run("one worker fails, the others' results are still aggregated", func(t *testing.T) {
+	t.Run("one worker fails, its trees are reassigned to the survivor within the same request", func(t *testing.T) {
+		fakeS3 := testutil.NewFakeS3(t)
+		storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
+		store, err := orchestrator.NewS3Store(context.Background(), &storageCfg)
+		require.NoError(t, err)
+		require.NoError(t, testutil.SeedTrainedModel(context.Background(), store, "model-c4a", 4))
+
 		ok := testutil.NewFakeWorker(t)
-		ok.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
-			return &pb.PredictResponse{Predictions: []string{"42.0"}}, nil
-		}
+		ok.PredictFunc = testutil.PredictFuncReturning(testutil.ValueVote(42))
 		crashing := testutil.NewFakeWorker(t)
 		crashing.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
 			return nil, status.Error(codes.Unavailable, "worker crashed mid-predict")
@@ -211,12 +258,23 @@ func TestC4_WorkerDiesDuringPredict(t *testing.T) {
 		pool := newPool(t, ok.Address, crashing.Address)
 
 		req := &pb.PredictRequest{ModelId: "model-c4a", Features: []float32{1}}
-		result, err := pool.PredictDistributed(context.Background(), req, "regression")
+		result, err := pool.PredictDistributed(context.Background(), req, "regression", &storageCfg)
 		require.NoError(t, err)
-		assert.Equal(t, "42.000000", result, "only the surviving worker's contribution is aggregated")
+		assert.Equal(t, "42.000000", result)
+
+		// The survivor answered for its own chunk and then for the crashed
+		// worker's one: no tree of the forest was left out.
+		require.Len(t, ok.PredictCalls(), 2)
+		assert.Equal(t, indices(4), predictedTrees(ok.PredictCalls()))
 	})
 
 	t.Run("all workers fail, an explicit error is returned", func(t *testing.T) {
+		fakeS3 := testutil.NewFakeS3(t)
+		storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
+		store, err := orchestrator.NewS3Store(context.Background(), &storageCfg)
+		require.NoError(t, err)
+		require.NoError(t, testutil.SeedTrainedModel(context.Background(), store, "model-c4b", 2))
+
 		crashing1 := testutil.NewFakeWorker(t)
 		crashing1.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
 			return nil, status.Error(codes.Unavailable, "crash 1")
@@ -229,9 +287,9 @@ func TestC4_WorkerDiesDuringPredict(t *testing.T) {
 		pool := newPool(t, crashing1.Address, crashing2.Address)
 
 		req := &pb.PredictRequest{ModelId: "model-c4b", Features: []float32{1}}
-		_, err := pool.PredictDistributed(context.Background(), req, "regression")
+		_, err = pool.PredictDistributed(context.Background(), req, "regression", &storageCfg)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "no workers returned valid results")
+		assert.Contains(t, err.Error(), "giving up")
 	})
 }
 
@@ -240,63 +298,62 @@ func TestC4_WorkerDiesDuringPredict(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestC5_PredictOnNonexistentModel(t *testing.T) {
-	emptyWorker := testutil.NewFakeWorker(t)
-	emptyWorker.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
-		// What worker_service.py does when it finds no model parts for the
-		// given model_id: returns PredictResponse{} (predictions left as
-		// its zero value, an empty list) - a valid, successful response
-		// meaning "this worker contributes nothing", not an error.
-		return &pb.PredictResponse{}, nil
-	}
+	fakeS3 := testutil.NewFakeS3(t)
+	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
 
-	pool := newPool(t, emptyWorker.Address)
+	worker := testutil.NewFakeWorker(t)
+	pool := newPool(t, worker.Address)
 
 	req := &pb.PredictRequest{ModelId: "does-not-exist", Features: []float32{1, 2}}
-	_, err := pool.PredictDistributed(context.Background(), req, "classification")
+	_, err := pool.PredictDistributed(context.Background(), req, "classification", &storageCfg)
 
-	// The worker's response is successful but empty, so it contributes
-	// nothing to the aggregation - since it was the only worker, the
-	// aggregation step reports the generic "no results" error.
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no workers returned valid results")
+	// The master knows from S3 that no training was ever requested for this
+	// id: nothing is sent to the workers.
+	require.ErrorIs(t, err, orchestrator.ErrModelNotFound)
+	assert.Empty(t, worker.PredictCalls())
 }
 
 // ---------------------------------------------------------------------
-// C6 — Predict with num_worker > trees: at least one
-// worker ends up with zero files assigned by round-robin (more workers
-// than trees), and correctly contributes nothing, while the others still
-// succeed.
+// C6 — Predict with num_worker > trees: the master assigns no tree to the
+// workers in excess, which are simply not called.
 // ---------------------------------------------------------------------
 
 func TestC6_MoreWorkersThanTrees(t *testing.T) {
-	w0 := testutil.NewFakeWorker(t)
-	w0.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
-		return &pb.PredictResponse{Predictions: []string{"cat"}}, nil
-	}
-	w1 := testutil.NewFakeWorker(t)
-	w1.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
-		return &pb.PredictResponse{Predictions: []string{"cat"}}, nil
-	}
-	// Worker 2 got no files assigned by its own round-robin (more workers
-	// than trees) - a valid, empty response, not an error.
-	w2 := testutil.NewFakeWorker(t)
-	w2.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
-		return &pb.PredictResponse{}, nil
+	fakeS3 := testutil.NewFakeS3(t)
+	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
+	store, err := orchestrator.NewS3Store(context.Background(), &storageCfg)
+	require.NoError(t, err)
+	require.NoError(t, testutil.SeedTrainedModel(context.Background(), store, "model-c6", 2))
+
+	workers := []*testutil.FakeWorker{testutil.NewFakeWorker(t), testutil.NewFakeWorker(t), testutil.NewFakeWorker(t)}
+	for _, w := range workers {
+		w.PredictFunc = testutil.PredictFuncReturning(testutil.ClassVote("cat"))
 	}
 
-	pool := newPool(t, w0.Address, w1.Address, w2.Address)
+	pool := newPool(t, workers[0].Address, workers[1].Address, workers[2].Address)
 
 	req := &pb.PredictRequest{ModelId: "model-c6", Features: []float32{1}}
-	result, err := pool.PredictDistributed(context.Background(), req, "classification")
-	require.NoError(t, err, "the other two workers still produced valid results")
+	result, err := pool.PredictDistributed(context.Background(), req, "classification", &storageCfg)
+	require.NoError(t, err)
 	assert.Equal(t, "cat", result)
+
+	var called int
+	var all []*pb.PredictRequest
+	for _, w := range workers {
+		if len(w.PredictCalls()) > 0 {
+			called++
+			all = append(all, w.PredictCalls()...)
+		}
+	}
+	assert.Equal(t, 2, called, "with 2 trees and 3 workers, one worker has nothing to do")
+	assert.Equal(t, indices(2), predictedTrees(all))
 }
 
 // ---------------------------------------------------------------------
 // C7 — Fake crashed worker was actually just slow:
-// the deterministic filename (forest_part_{worker_index}.joblib, not a
-// random UUID) means a late re-upload overwrites the same S3 key instead
-// of creating a duplicate part for the same partition.
+// the deterministic filename (tree_{tree_index}.joblib, not a random UUID)
+// means a late re-upload overwrites the same S3 key instead of creating a
+// duplicate file for the same tree.
 // ---------------------------------------------------------------------
 
 func TestC7_LateReuploadOverwritesSameKey(t *testing.T) {
@@ -305,20 +362,19 @@ func TestC7_LateReuploadOverwritesSameKey(t *testing.T) {
 	store, err := orchestrator.NewS3Store(context.Background(), &storageCfg)
 	require.NoError(t, err)
 
-	key := "models/model-c7/model_parts/forest_part_0.joblib"
+	key := testutil.TreeKey("model-c7", 0)
 
-	// A worker completes training and uploads its part.
+	// A worker completes a tree and uploads it.
 	require.NoError(t, store.PutBytes(context.Background(), key, []byte("first-attempt")))
 
-	// A health check later marks it "dead" and its partition gets
-	// reassigned elsewhere - but in reality the original worker was just
-	// slow, and it now also finishes and uploads under the exact same
-	// deterministic key.
+	// A health check later marks it "dead" and its tree gets reassigned
+	// elsewhere - but in reality the original worker was just slow, and it
+	// now also finishes and uploads under the exact same deterministic key.
 	require.NoError(t, store.PutBytes(context.Background(), key, []byte("second-attempt")))
 
 	keys, err := store.ListKeys(context.Background(), "models/model-c7/model_parts/")
 	require.NoError(t, err)
-	assert.Len(t, keys, 1, "same worker_index must overwrite, never duplicate, the existing part")
+	assert.Len(t, keys, 1, "same tree index must overwrite, never duplicate, the existing file")
 
 	body, found, err := store.GetBytes(context.Background(), key)
 	require.NoError(t, err)
@@ -339,14 +395,14 @@ func TestC8_NoHealthyWorkers(t *testing.T) {
 	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
 
 	t.Run("TrainDistributed", func(t *testing.T) {
-		_, err := pool.TrainDistributed(context.Background(), newTrainRequest("model-c8"), &storageCfg)
+		_, err := pool.TrainDistributed(context.Background(), newTrainJob("model-c8", 3), &storageCfg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no healthy workers available")
 	})
 
 	t.Run("PredictDistributed", func(t *testing.T) {
 		req := &pb.PredictRequest{ModelId: "model-c8", Features: []float32{1}}
-		_, err := pool.PredictDistributed(context.Background(), req, "classification")
+		_, err := pool.PredictDistributed(context.Background(), req, "classification", &storageCfg)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "no healthy workers available")
 	})
@@ -357,36 +413,41 @@ func TestC8_NoHealthyWorkers(t *testing.T) {
 // ---------------------------------------------------------------------
 
 func TestC9_WorkerCountChangesBetweenTrainAndPredict(t *testing.T) {
-	w0 := testutil.NewFakeWorker(t)
-	w1 := testutil.NewFakeWorker(t)
-	w2 := testutil.NewFakeWorker(t)
-
-	pool := newPool(t, w0.Address, w1.Address, w2.Address)
 	fakeS3 := testutil.NewFakeS3(t)
 	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
 
-	// Train with all 3 workers healthy.
-	resp, err := pool.TrainDistributed(context.Background(), newTrainRequest("model-c9"), &storageCfg)
+	w0 := testutil.NewFakeWorker(t)
+	w1 := testutil.NewFakeWorker(t)
+	w2 := testutil.NewFakeWorker(t)
+	for _, w := range []*testutil.FakeWorker{w0, w1, w2} {
+		w.TrainFunc = testutil.TrainFuncUploadingTrees(&storageCfg)
+	}
+
+	pool := newPool(t, w0.Address, w1.Address, w2.Address)
+
+	// Train with all 3 workers healthy: 6 trees, 2 each.
+	resp, err := pool.TrainDistributed(context.Background(), newTrainJob("model-c9", 6), &storageCfg)
 	require.NoError(t, err)
 	require.True(t, resp.Success)
-	assert.Len(t, w0.TrainCalls(), 1)
-	assert.Len(t, w1.TrainCalls(), 1)
-	assert.Len(t, w2.TrainCalls(), 1)
-	assert.Equal(t, int32(3), w0.TrainCalls()[0].TotalWorkers)
+	for _, w := range []*testutil.FakeWorker{w0, w1, w2} {
+		require.Len(t, w.TrainCalls(), 1)
+		assert.Len(t, w.TrainCalls()[0].TreeIndices, 2)
+	}
+	assert.Equal(t, indices(6), requestedTrees(append(append(w0.TrainCalls(), w1.TrainCalls()...), w2.TrainCalls()...)))
 
 	// w2 goes down before the predict request.
 	w2.SetHealthy(false)
 
 	predictReq := &pb.PredictRequest{ModelId: "model-c9", Features: []float32{1}}
-	_, err = pool.PredictDistributed(context.Background(), predictReq, "classification")
+	_, err = pool.PredictDistributed(context.Background(), predictReq, "classification", &storageCfg)
 	require.NoError(t, err)
 
-	// Indices/totals are recomputed fresh on just the 2 survivors - not the
-	// 3 that trained the model.
+	// The same 6 trees are re-split over just the 2 survivors, 3 each - a
+	// worker doesn't need to have trained a tree to serve it.
 	assert.Empty(t, w2.PredictCalls())
 	require.Len(t, w0.PredictCalls(), 1)
 	require.Len(t, w1.PredictCalls(), 1)
-	assert.Equal(t, int32(2), w0.PredictCalls()[0].TotalWorkers)
-	assert.Equal(t, int32(2), w1.PredictCalls()[0].TotalWorkers)
-	assert.ElementsMatch(t, []int32{0, 1}, []int32{w0.PredictCalls()[0].WorkerIndex, w1.PredictCalls()[0].WorkerIndex})
+	assert.Len(t, w0.PredictCalls()[0].TreeIndices, 3)
+	assert.Len(t, w1.PredictCalls()[0].TreeIndices, 3)
+	assert.Equal(t, indices(6), predictedTrees(append(w0.PredictCalls(), w1.PredictCalls()...)))
 }

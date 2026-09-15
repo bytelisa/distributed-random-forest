@@ -59,14 +59,14 @@ class WorkerServicer(object):
     """
 
     def Train(self, request, context):
-        """Start training a subset of trees
+        """Train the given subset of trees of one forest
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def Predict(self, request, context):
-        """Inference on given input
+        """Inference on given input, using the given subset of trees
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

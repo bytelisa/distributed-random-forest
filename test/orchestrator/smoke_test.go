@@ -34,9 +34,9 @@ func TestSmoke_S3Store_AgainstFakeS3(t *testing.T) {
 
 	// PutJSON then GetJSON round-trip.
 	type meta struct {
-		TotalPartitions int32 `json:"total_partitions"`
+		NEstimators int32 `json:"n_estimators"`
 	}
-	if err := store.PutJSON(ctx, "models/m1/train_request.json", meta{TotalPartitions: 3}); err != nil {
+	if err := store.PutJSON(ctx, "models/m1/train_request.json", meta{NEstimators: 3}); err != nil {
 		t.Fatalf("PutJSON: %v", err)
 	}
 	var got meta
@@ -44,15 +44,15 @@ func TestSmoke_S3Store_AgainstFakeS3(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("GetJSON after PutJSON: found=%v err=%v", found, err)
 	}
-	if got.TotalPartitions != 3 {
-		t.Fatalf("expected TotalPartitions=3, got %d", got.TotalPartitions)
+	if got.NEstimators != 3 {
+		t.Fatalf("expected NEstimators=3, got %d", got.NEstimators)
 	}
 
 	// ListKeys with a prefix.
-	if err := store.PutBytes(ctx, "models/m1/model_parts/forest_part_0.joblib", []byte("x")); err != nil {
+	if err := store.PutBytes(ctx, "models/m1/model_parts/tree_0.joblib", []byte("x")); err != nil {
 		t.Fatalf("PutBytes: %v", err)
 	}
-	if err := store.PutBytes(ctx, "models/m1/model_parts/forest_part_1.joblib", []byte("y")); err != nil {
+	if err := store.PutBytes(ctx, "models/m1/model_parts/tree_1.joblib", []byte("y")); err != nil {
 		t.Fatalf("PutBytes: %v", err)
 	}
 	keys, err := store.ListKeys(ctx, "models/m1/model_parts/")
@@ -61,6 +61,21 @@ func TestSmoke_S3Store_AgainstFakeS3(t *testing.T) {
 	}
 	if len(keys) != 2 {
 		t.Fatalf("expected 2 keys, got %d: %v", len(keys), keys)
+	}
+
+	// DeleteKey, also on a key that doesn't exist.
+	if err := store.DeleteKey(ctx, "models/m1/model_parts/tree_1.joblib"); err != nil {
+		t.Fatalf("DeleteKey: %v", err)
+	}
+	if err := store.DeleteKey(ctx, "models/m1/model_parts/missing.joblib"); err != nil {
+		t.Fatalf("DeleteKey on missing key: %v", err)
+	}
+	keys, err = store.ListKeys(ctx, "models/m1/model_parts/")
+	if err != nil {
+		t.Fatalf("ListKeys after delete: %v", err)
+	}
+	if len(keys) != 1 {
+		t.Fatalf("expected 1 key after delete, got %d: %v", len(keys), keys)
 	}
 
 	// ListCommonPrefixes with a delimiter.

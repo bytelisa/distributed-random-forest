@@ -10,22 +10,19 @@ COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -o master_exec cmd/master/master_main.go
 
-# --- STAGE 2: Create the final image (Now based on Python!) ---
-FROM python:3.9-slim
+# --- STAGE 2: Create the final image ---
+FROM alpine:3.20
 
 WORKDIR /root/
 
-# Install the Python libraries needed by the partitioner script
-RUN pip install --no-cache-dir pandas numpy boto3
+# TLS roots, needed to talk to real S3 over https
+RUN apk add --no-cache ca-certificates
 
 # Copy the Go binary from the builder stage
 COPY --from=builder /app/master_exec .
 
 # Copy configs
 COPY configs ./configs
-
-# to find partitioner.py
-COPY scripts ./scripts
 
 EXPOSE 8080
 

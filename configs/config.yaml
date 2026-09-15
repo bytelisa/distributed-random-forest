@@ -51,3 +51,6 @@ system:
   timeout_training_seconds: 60
   timeout_prediction_seconds: 5
   timeout_health_check_seconds: 2
+  default_n_estimators: 100       # Used when a /train request omits n_estimators
+  max_retries_per_tree: 10        # Reassignments of a single tree after worker failures
+  retry_backoff_seconds: 3        # Wait between health checks while no worker is healthy

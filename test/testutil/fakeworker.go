@@ -29,8 +29,8 @@ type FakeWorker struct {
 	// TrainFunc, if set, overrides the default (always-succeeds) Train
 	// behavior.
 	TrainFunc func(ctx context.Context, req *pb.TrainRequest) (*pb.TrainResponse, error)
-	// PredictFunc, if set, overrides the default (single dummy prediction)
-	// Predict behavior.
+	// PredictFunc, if set, overrides the default (one dummy vote per
+	// requested tree) Predict behavior.
 	PredictFunc func(ctx context.Context, req *pb.PredictRequest) (*pb.PredictResponse, error)
 
 	trainCalls   []*pb.TrainRequest
@@ -138,5 +138,5 @@ func (w *FakeWorker) Predict(ctx context.Context, req *pb.PredictRequest) (*pb.P
 	if fn != nil {
 		return fn(ctx, req)
 	}
-	return &pb.PredictResponse{Predictions: []string{"0"}}, nil
+	return PredictFuncReturning(ClassVote("0"))(ctx, req)
 }

@@ -1,13 +1,11 @@
 # model.py
+import math
 import os
-import random
 from typing import Union
 import pandas as pd
 import numpy as np
 import joblib
-import time
-import io
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
 class ModelError(Exception):
     pass
@@ -43,12 +41,10 @@ def load_dataset(dataset_path: str) -> pd.DataFrame:
         raise ModelError(f"[Model] Could not load dataset from {dataset_path}: {e}")
 
 
-def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estimators: int, random_seed=None, **hyperparameters) -> Union[RandomForestClassifier, RandomForestRegressor]:
+def prepare_features(data: pd.DataFrame, target_column: str):
     """
-    Trains a RandomForest model.
+    Splits the dataset into numeric features X and target y, keeping the row order.
     """
-    print(f"[Model] Starting training for target: {target_column}")
-
     # 1. VALIDATE TARGET
     if target_column not in data.columns:
         raise ModelError(f"Target column '{target_column}' not found. Available: {data.columns.tolist()}")
@@ -77,40 +73,48 @@ def train_model(data: pd.DataFrame, target_column: str, task_type: str, n_estima
     # Quick fix: fill with 0. Necessary for housing.csv
     X_numeric = X_numeric.fillna(0)
 
-    print(f"[Model] Training on features: {X_numeric.columns.tolist()}")
+    return X_numeric, y
 
-    # Important note: using different random seeds (not hardcoded) to initialize the different randomForest
-    # models is fundamental! Otherwise, the forests would be correlated and the entire validity of the
-    # ensemble method is lost. In fact, we need k different and uncorrelated samples to perform bootstrap.
 
-    seed = random_seed if random_seed is not None else random.randint(0, 10000)
-
-    print(f"[Model] Training {n_estimators} trees using Random State: {seed}")
-
-    # 6. MODEL INITIALIZATION
-    # Extra hyperparameters (max_depth, max_features, min_samples_split,
-    # min_samples_leaf, bootstrap, max_samples, criterion, max_leaf_nodes,
-    # class_weight, oob_score) are forwarded to scikit-learn, already
-    # validated by the master (in internal/api/hyperparameters.go)
+def _default_hyperparameters(task_type: str, n_features: int) -> dict:
+    # A lone DecisionTree defaults to considering every feature at each split,
+    # which would make this bagging, not a random forest: the RandomForest
+    # defaults are applied here, per task.
     if task_type == 'classification':
-        model = RandomForestClassifier(n_estimators=n_estimators, random_state=seed, n_jobs=1, **hyperparameters)
-    elif task_type == 'regression':
-        model = RandomForestRegressor(n_estimators=n_estimators, random_state=seed, n_jobs=1, **hyperparameters)
-    else:
-        raise ModelError(f"Invalid task type '{task_type}'. Choose 'classification' or 'regression'.")
+        return {"max_features": "sqrt", "criterion": "entropy"}
+    if task_type == 'regression':
+        return {"max_features": max(1, math.ceil(n_features / 3)), "criterion": "squared_error"}
+    raise ModelError(f"Invalid task type '{task_type}'. Choose 'classification' or 'regression'.")
 
-    # 7. TRAIN
+
+def train_tree(X: pd.DataFrame, y: pd.Series, task_type: str, seed: int, **hyperparameters) -> Union[DecisionTreeClassifier, DecisionTreeRegressor]:
+    """
+    Trains one decision tree on the given (already bootstrapped) sample.
+    Hyperparameters passed explicitly override the per-task defaults.
+    """
+    params = _default_hyperparameters(task_type, X.shape[1])
+    params.update(hyperparameters)
+
+    print(f"[Model] Training tree with random state {seed} and params {params}")
+
+    if task_type == 'classification':
+        model = DecisionTreeClassifier(random_state=seed, **params)
+    else:
+        model = DecisionTreeRegressor(random_state=seed, **params)
+
     try:
-        model.fit(X_numeric, y)
-        print(f"[Model] Training completed successfully on {n_estimators} trees.")
+        model.fit(X, y)
         return model
     except Exception as e:
         raise ModelError(f"Scikit-learn training failed: {e}")
 
 
-def load_and_predict(model_path: str, features: list) -> str:
+def load_and_predict(model_path: str, features: list) -> dict:
     """
-    Loads a serialized model and uses it to make predictions.
+    Loads a serialized tree and returns its raw output for one sample:
+    {"classes": [...], "probabilities": [...]} for a classifier (the tree
+    only knows the classes seen in its own bootstrap sample), {"value": v}
+    for a regressor.
     """
     print("[Model] Starting prediction...")
 
@@ -126,10 +130,13 @@ def load_and_predict(model_path: str, features: list) -> str:
     new_data = np.array(features).reshape(1, -1)
 
     try:
-        prediction = model.predict(new_data)
-        result = str(prediction[0])
-        print(f"[Model] Prediction result: {result}")
-        return result
+        if hasattr(model, "predict_proba"):
+            probabilities = model.predict_proba(new_data)[0]
+            return {
+                "classes": [str(c) for c in model.classes_],
+                "probabilities": [float(p) for p in probabilities],
+            }
+        return {"value": float(model.predict(new_data)[0])}
     except Exception as e:
         # Often happens if feature count doesn't match
         raise ModelError(f"[Model] Inference error (check feature count): {e}")

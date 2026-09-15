@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -25,7 +26,7 @@ type Server struct {
 func NewServer(cfg *config.Config) (*Server, error) {
 
 	// 1. Initialize Worker Pool
-	pool, err := orchestrator.NewWorkerPool(cfg.Workers.Addresses, cfg.System.TimeoutHealthCheck)
+	pool, err := orchestrator.NewWorkerPool(cfg.Workers.Addresses, &cfg.System)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize worker pool: %w", err)
 	}
@@ -65,13 +66,6 @@ func (s *Server) Router() http.Handler {
 	return s.router
 }
 
-// WorkerPool exposes the underlying worker pool, so tests can substitute
-// fault-injecting fakes (e.g. WorkerPool().PartitionDataset) before issuing
-// requests against Router().
-func (s *Server) WorkerPool() *orchestrator.WorkerPool {
-	return s.workerPool
-}
-
 // handleHealth is used by the Application Load Balancer's target group to
 // check whether this master instance is alive
 func (s *Server) handleHealth(c *gin.Context) {
@@ -103,11 +97,19 @@ func (s *Server) handleTrain(c *gin.Context) {
 		return
 	}
 
+	if req.NEstimators < 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "n_estimators must be a positive integer"})
+		return
+	}
+	if req.NEstimators == 0 {
+		req.NEstimators = s.config.System.DefaultNEstimators
+	}
+
 	modelID := uuid.New().String()
 
-	grpcReq := &pb.TrainRequest{
-		ModelId:         modelID,
-		DatasetUrl:      req.DatasetURL,
+	job := orchestrator.TrainJob{
+		ModelID:         modelID,
+		DatasetURL:      req.DatasetURL,
 		TaskType:        pbTaskType,
 		TargetColumn:    req.TargetColumn,
 		NEstimators:     int32(req.NEstimators),
@@ -131,7 +133,7 @@ func (s *Server) handleTrain(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 
-		orchestratorResp, err := s.workerPool.TrainDistributed(ctx, grpcReq, &s.config.Storage)
+		orchestratorResp, err := s.workerPool.TrainDistributed(ctx, job, &s.config.Storage)
 		if err != nil {
 			log.Printf("[Master] Training %s failed: %v", modelID, err)
 			return
@@ -159,14 +161,15 @@ func (s *Server) handleModelStatus(c *gin.Context) {
 		return
 	}
 
-	if status == "not_found" {
+	if status.Status == "not_found" {
 		c.JSON(http.StatusNotFound, gin.H{"error": "model not found", "model_id": modelID})
 		return
 	}
 
 	c.JSON(http.StatusOK, TrainResponse{
 		ModelID: modelID,
-		Status:  status,
+		Status:  status.Status,
+		Message: status.Message,
 	})
 }
 
@@ -192,8 +195,12 @@ func (s *Server) handlePredict(c *gin.Context) {
 	}
 
 	// Send request to Orchestrator
-	predictionResult, err := s.workerPool.PredictDistributed(ctx, grpcReq, req.TaskType)
+	predictionResult, err := s.workerPool.PredictDistributed(ctx, grpcReq, req.TaskType, &s.config.Storage)
 
+	if errors.Is(err, orchestrator.ErrModelNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "model not found", "model_id": modelID})
+		return
+	}
 	if err != nil {
 		log.Printf("[Master] Inference error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Distributed inference failed: " + err.Error()})

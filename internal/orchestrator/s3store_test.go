@@ -1,6 +1,6 @@
 package orchestrator
 
-// White-box unit tests (same package: parsePartitionIndex/resolveRegion are
+// White-box unit tests (same package: parseTreeIndex/resolveRegion are
 // unexported) for the two pure helpers in s3store.go.
 // See test_suite_design.md, sezione A, A4/A6.
 
@@ -10,8 +10,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// A4 — parsePartitionIndex
-func TestParsePartitionIndex(t *testing.T) {
+// A4 — parseTreeIndex
+func TestParseTreeIndex(t *testing.T) {
 	cases := []struct {
 		name    string
 		key     string
@@ -20,19 +20,19 @@ func TestParsePartitionIndex(t *testing.T) {
 	}{
 		{
 			name:    "valid single-digit index",
-			key:     "models/abc/model_parts/forest_part_0.joblib",
+			key:     "models/abc/model_parts/tree_0.joblib",
 			wantIdx: 0,
 			wantOk:  true,
 		},
 		{
 			name:    "valid multi-digit index",
-			key:     "models/abc/model_parts/forest_part_12.joblib",
+			key:     "models/abc/model_parts/tree_12.joblib",
 			wantIdx: 12,
 			wantOk:  true,
 		},
 		{
-			name:   "dataset partition csv does not match",
-			key:    "models/abc/dataset_partitions/part_0.csv",
+			name:   "per-worker naming does not match",
+			key:    "models/abc/model_parts/forest_part_0.joblib",
 			wantOk: false,
 		},
 		{
@@ -42,14 +42,14 @@ func TestParsePartitionIndex(t *testing.T) {
 		},
 		{
 			name:   "trailing suffix after .joblib does not match (regex is anchored at $)",
-			key:    "models/abc/model_parts/forest_part_0.joblib.bak",
+			key:    "models/abc/model_parts/tree_0.joblib.bak",
 			wantOk: false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			idx, ok := parsePartitionIndex(tc.key)
+			idx, ok := parseTreeIndex(tc.key)
 			assert.Equal(t, tc.wantOk, ok)
 			if tc.wantOk {
 				assert.Equal(t, tc.wantIdx, idx)

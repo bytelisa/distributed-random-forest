@@ -73,27 +73,23 @@ func (TaskType) EnumDescriptor() ([]byte, []int) {
 type TrainRequest struct {
 	state   protoimpl.MessageState `protogen:"open.v1"`
 	ModelId string                 `protobuf:"bytes,1,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
-	// this url will redirect each worker to a specific partition of the dataset
-	DatasetUrl string   `protobuf:"bytes,2,opt,name=dataset_url,json=datasetUrl,proto3" json:"dataset_url,omitempty"`
-	TaskType   TaskType `protobuf:"varint,3,opt,name=task_type,json=taskType,proto3,enum=worker.v1.TaskType" json:"task_type,omitempty"`
-	// RandomForest hyperparameters
-	NEstimators  int32  `protobuf:"varint,4,opt,name=n_estimators,json=nEstimators,proto3" json:"n_estimators,omitempty"`
-	TargetColumn string `protobuf:"bytes,6,opt,name=target_column,json=targetColumn,proto3" json:"target_column,omitempty"`
-	// Necessary for uncorrelated forests
-	RandomSeed int32 `protobuf:"varint,7,opt,name=random_seed,json=randomSeed,proto3" json:"random_seed,omitempty"`
-	// NEW: Fields for deterministic dataset partitioning
-	WorkerIndex  int32 `protobuf:"varint,8,opt,name=worker_index,json=workerIndex,proto3" json:"worker_index,omitempty"`
-	TotalWorkers int32 `protobuf:"varint,9,opt,name=total_workers,json=totalWorkers,proto3" json:"total_workers,omitempty"`
-	// Additional RandomForest hyperparameters (max_depth, max_features,
-	// min_samples_split, min_samples_leaf, bootstrap, max_samples, criterion,
-	// max_leaf_nodes, class_weight, oob_score), validated and converted to
-	// strings by the master (internal/api) before being sent here. The
-	// worker converts each value back to the right Python type generically
-	// (see services/worker/worker_service.py) and forwards them as kwargs to
+	// Object key of the full training set, identical for every worker.
+	// Each tree draws its own bootstrap sample from it.
+	DatasetUrl   string   `protobuf:"bytes,2,opt,name=dataset_url,json=datasetUrl,proto3" json:"dataset_url,omitempty"`
+	TaskType     TaskType `protobuf:"varint,3,opt,name=task_type,json=taskType,proto3,enum=worker.v1.TaskType" json:"task_type,omitempty"`
+	TargetColumn string   `protobuf:"bytes,6,opt,name=target_column,json=targetColumn,proto3" json:"target_column,omitempty"`
+	// Decision tree hyperparameters (max_depth, max_features,
+	// min_samples_split, min_samples_leaf, criterion, max_leaf_nodes,
+	// class_weight), validated and converted to strings by the master
+	// (internal/api) before being sent here. The worker converts each value
+	// back to the right Python type generically and forwards them to
 	// scikit-learn.
 	Hyperparameters map[string]string `protobuf:"bytes,10,rep,name=hyperparameters,proto3" json:"hyperparameters,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Indices (0..n_estimators-1) of the trees this worker has to train.
+	// Not necessarily contiguous: a retry carries only the trees still missing.
+	TreeIndices   []int32 `protobuf:"varint,11,rep,packed,name=tree_indices,json=treeIndices,proto3" json:"tree_indices,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *TrainRequest) Reset() {
@@ -147,13 +143,6 @@ func (x *TrainRequest) GetTaskType() TaskType {
 	return TaskType_UNSPECIFIED_TASK
 }
 
-func (x *TrainRequest) GetNEstimators() int32 {
-	if x != nil {
-		return x.NEstimators
-	}
-	return 0
-}
-
 func (x *TrainRequest) GetTargetColumn() string {
 	if x != nil {
 		return x.TargetColumn
@@ -161,30 +150,16 @@ func (x *TrainRequest) GetTargetColumn() string {
 	return ""
 }
 
-func (x *TrainRequest) GetRandomSeed() int32 {
-	if x != nil {
-		return x.RandomSeed
-	}
-	return 0
-}
-
-func (x *TrainRequest) GetWorkerIndex() int32 {
-	if x != nil {
-		return x.WorkerIndex
-	}
-	return 0
-}
-
-func (x *TrainRequest) GetTotalWorkers() int32 {
-	if x != nil {
-		return x.TotalWorkers
-	}
-	return 0
-}
-
 func (x *TrainRequest) GetHyperparameters() map[string]string {
 	if x != nil {
 		return x.Hyperparameters
+	}
+	return nil
+}
+
+func (x *TrainRequest) GetTreeIndices() []int32 {
+	if x != nil {
+		return x.TreeIndices
 	}
 	return nil
 }
@@ -245,9 +220,8 @@ type PredictRequest struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	ModelId  string                 `protobuf:"bytes,1,opt,name=model_id,json=modelId,proto3" json:"model_id,omitempty"`
 	Features []float32              `protobuf:"fixed32,2,rep,packed,name=features,proto3" json:"features,omitempty"`
-	// fields necessary to partition trained trees between the workers
-	WorkerIndex   int32 `protobuf:"varint,3,opt,name=worker_index,json=workerIndex,proto3" json:"worker_index,omitempty"`    // Indice del worker (0, 1, 2...)
-	TotalWorkers  int32 `protobuf:"varint,4,opt,name=total_workers,json=totalWorkers,proto3" json:"total_workers,omitempty"` // Totale worker attivi
+	// Indices of the trees this worker has to load and query.
+	TreeIndices   []int32 `protobuf:"varint,5,rep,packed,name=tree_indices,json=treeIndices,proto3" json:"tree_indices,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -296,31 +270,87 @@ func (x *PredictRequest) GetFeatures() []float32 {
 	return nil
 }
 
-func (x *PredictRequest) GetWorkerIndex() int32 {
+func (x *PredictRequest) GetTreeIndices() []int32 {
 	if x != nil {
-		return x.WorkerIndex
+		return x.TreeIndices
 	}
-	return 0
+	return nil
 }
 
-func (x *PredictRequest) GetTotalWorkers() int32 {
+// Output of a single tree. Classification trees fill classes/probabilities
+// (a tree only knows the classes seen in its own bootstrap sample, so the
+// labels travel with the probabilities); regression trees fill value.
+type TreePrediction struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Classes       []string               `protobuf:"bytes,1,rep,name=classes,proto3" json:"classes,omitempty"`
+	Probabilities []float64              `protobuf:"fixed64,2,rep,packed,name=probabilities,proto3" json:"probabilities,omitempty"`
+	Value         float64                `protobuf:"fixed64,3,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TreePrediction) Reset() {
+	*x = TreePrediction{}
+	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TreePrediction) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TreePrediction) ProtoMessage() {}
+
+func (x *TreePrediction) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[3]
 	if x != nil {
-		return x.TotalWorkers
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TreePrediction.ProtoReflect.Descriptor instead.
+func (*TreePrediction) Descriptor() ([]byte, []int) {
+	return file_api_proto_worker_v1_worker_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *TreePrediction) GetClasses() []string {
+	if x != nil {
+		return x.Classes
+	}
+	return nil
+}
+
+func (x *TreePrediction) GetProbabilities() []float64 {
+	if x != nil {
+		return x.Probabilities
+	}
+	return nil
+}
+
+func (x *TreePrediction) GetValue() float64 {
+	if x != nil {
+		return x.Value
 	}
 	return 0
 }
 
 type PredictResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Changed from single string to repeated to allow master-side global aggregation
-	Predictions   []string `protobuf:"bytes,1,rep,name=predictions,proto3" json:"predictions,omitempty"`
+	// One entry per tree, aggregated by the master (no local aggregation)
+	Predictions   []*TreePrediction `protobuf:"bytes,1,rep,name=predictions,proto3" json:"predictions,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PredictResponse) Reset() {
 	*x = PredictResponse{}
-	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[3]
+	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -332,7 +362,7 @@ func (x *PredictResponse) String() string {
 func (*PredictResponse) ProtoMessage() {}
 
 func (x *PredictResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[3]
+	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -345,10 +375,10 @@ func (x *PredictResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PredictResponse.ProtoReflect.Descriptor instead.
 func (*PredictResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_worker_v1_worker_proto_rawDescGZIP(), []int{3}
+	return file_api_proto_worker_v1_worker_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *PredictResponse) GetPredictions() []string {
+func (x *PredictResponse) GetPredictions() []*TreePrediction {
 	if x != nil {
 		return x.Predictions
 	}
@@ -363,7 +393,7 @@ type HealthRequest struct {
 
 func (x *HealthRequest) Reset() {
 	*x = HealthRequest{}
-	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[4]
+	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -375,7 +405,7 @@ func (x *HealthRequest) String() string {
 func (*HealthRequest) ProtoMessage() {}
 
 func (x *HealthRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[4]
+	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -388,7 +418,7 @@ func (x *HealthRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthRequest.ProtoReflect.Descriptor instead.
 func (*HealthRequest) Descriptor() ([]byte, []int) {
-	return file_api_proto_worker_v1_worker_proto_rawDescGZIP(), []int{4}
+	return file_api_proto_worker_v1_worker_proto_rawDescGZIP(), []int{5}
 }
 
 type HealthResponse struct {
@@ -400,7 +430,7 @@ type HealthResponse struct {
 
 func (x *HealthResponse) Reset() {
 	*x = HealthResponse{}
-	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[5]
+	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -412,7 +442,7 @@ func (x *HealthResponse) String() string {
 func (*HealthResponse) ProtoMessage() {}
 
 func (x *HealthResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[5]
+	mi := &file_api_proto_worker_v1_worker_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -425,7 +455,7 @@ func (x *HealthResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HealthResponse.ProtoReflect.Descriptor instead.
 func (*HealthResponse) Descriptor() ([]byte, []int) {
-	return file_api_proto_worker_v1_worker_proto_rawDescGZIP(), []int{5}
+	return file_api_proto_worker_v1_worker_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *HealthResponse) GetHealthy() bool {
@@ -439,33 +469,33 @@ var File_api_proto_worker_v1_worker_proto protoreflect.FileDescriptor
 
 const file_api_proto_worker_v1_worker_proto_rawDesc = "" +
 	"\n" +
-	" api/proto/worker/v1/worker.proto\x12\tworker.v1\"\xcf\x03\n" +
+	" api/proto/worker/v1/worker.proto\x12\tworker.v1\"\xfe\x02\n" +
 	"\fTrainRequest\x12\x19\n" +
 	"\bmodel_id\x18\x01 \x01(\tR\amodelId\x12\x1f\n" +
 	"\vdataset_url\x18\x02 \x01(\tR\n" +
 	"datasetUrl\x120\n" +
-	"\ttask_type\x18\x03 \x01(\x0e2\x13.worker.v1.TaskTypeR\btaskType\x12!\n" +
-	"\fn_estimators\x18\x04 \x01(\x05R\vnEstimators\x12#\n" +
-	"\rtarget_column\x18\x06 \x01(\tR\ftargetColumn\x12\x1f\n" +
-	"\vrandom_seed\x18\a \x01(\x05R\n" +
-	"randomSeed\x12!\n" +
-	"\fworker_index\x18\b \x01(\x05R\vworkerIndex\x12#\n" +
-	"\rtotal_workers\x18\t \x01(\x05R\ftotalWorkers\x12V\n" +
+	"\ttask_type\x18\x03 \x01(\x0e2\x13.worker.v1.TaskTypeR\btaskType\x12#\n" +
+	"\rtarget_column\x18\x06 \x01(\tR\ftargetColumn\x12V\n" +
 	"\x0fhyperparameters\x18\n" +
-	" \x03(\v2,.worker.v1.TrainRequest.HyperparametersEntryR\x0fhyperparameters\x1aB\n" +
+	" \x03(\v2,.worker.v1.TrainRequest.HyperparametersEntryR\x0fhyperparameters\x12!\n" +
+	"\ftree_indices\x18\v \x03(\x05R\vtreeIndices\x1aB\n" +
 	"\x14HyperparametersEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x05\x10\x06\"C\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06J\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
+	"\"C\n" +
 	"\rTrainResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage\"\x8f\x01\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"v\n" +
 	"\x0ePredictRequest\x12\x19\n" +
 	"\bmodel_id\x18\x01 \x01(\tR\amodelId\x12\x1a\n" +
 	"\bfeatures\x18\x02 \x03(\x02R\bfeatures\x12!\n" +
-	"\fworker_index\x18\x03 \x01(\x05R\vworkerIndex\x12#\n" +
-	"\rtotal_workers\x18\x04 \x01(\x05R\ftotalWorkers\"3\n" +
-	"\x0fPredictResponse\x12 \n" +
-	"\vpredictions\x18\x01 \x03(\tR\vpredictions\"\x0f\n" +
+	"\ftree_indices\x18\x05 \x03(\x05R\vtreeIndicesJ\x04\b\x03\x10\x04J\x04\b\x04\x10\x05\"f\n" +
+	"\x0eTreePrediction\x12\x18\n" +
+	"\aclasses\x18\x01 \x03(\tR\aclasses\x12$\n" +
+	"\rprobabilities\x18\x02 \x03(\x01R\rprobabilities\x12\x14\n" +
+	"\x05value\x18\x03 \x01(\x01R\x05value\"N\n" +
+	"\x0fPredictResponse\x12;\n" +
+	"\vpredictions\x18\x01 \x03(\v2\x19.worker.v1.TreePredictionR\vpredictions\"\x0f\n" +
 	"\rHealthRequest\"*\n" +
 	"\x0eHealthResponse\x12\x18\n" +
 	"\ahealthy\x18\x01 \x01(\bR\ahealthy*N\n" +
@@ -491,31 +521,33 @@ func file_api_proto_worker_v1_worker_proto_rawDescGZIP() []byte {
 }
 
 var file_api_proto_worker_v1_worker_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_api_proto_worker_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_api_proto_worker_v1_worker_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_api_proto_worker_v1_worker_proto_goTypes = []any{
 	(TaskType)(0),           // 0: worker.v1.TaskType
 	(*TrainRequest)(nil),    // 1: worker.v1.TrainRequest
 	(*TrainResponse)(nil),   // 2: worker.v1.TrainResponse
 	(*PredictRequest)(nil),  // 3: worker.v1.PredictRequest
-	(*PredictResponse)(nil), // 4: worker.v1.PredictResponse
-	(*HealthRequest)(nil),   // 5: worker.v1.HealthRequest
-	(*HealthResponse)(nil),  // 6: worker.v1.HealthResponse
-	nil,                     // 7: worker.v1.TrainRequest.HyperparametersEntry
+	(*TreePrediction)(nil),  // 4: worker.v1.TreePrediction
+	(*PredictResponse)(nil), // 5: worker.v1.PredictResponse
+	(*HealthRequest)(nil),   // 6: worker.v1.HealthRequest
+	(*HealthResponse)(nil),  // 7: worker.v1.HealthResponse
+	nil,                     // 8: worker.v1.TrainRequest.HyperparametersEntry
 }
 var file_api_proto_worker_v1_worker_proto_depIdxs = []int32{
 	0, // 0: worker.v1.TrainRequest.task_type:type_name -> worker.v1.TaskType
-	7, // 1: worker.v1.TrainRequest.hyperparameters:type_name -> worker.v1.TrainRequest.HyperparametersEntry
-	1, // 2: worker.v1.Worker.Train:input_type -> worker.v1.TrainRequest
-	3, // 3: worker.v1.Worker.Predict:input_type -> worker.v1.PredictRequest
-	5, // 4: worker.v1.Worker.Health:input_type -> worker.v1.HealthRequest
-	2, // 5: worker.v1.Worker.Train:output_type -> worker.v1.TrainResponse
-	4, // 6: worker.v1.Worker.Predict:output_type -> worker.v1.PredictResponse
-	6, // 7: worker.v1.Worker.Health:output_type -> worker.v1.HealthResponse
-	5, // [5:8] is the sub-list for method output_type
-	2, // [2:5] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	8, // 1: worker.v1.TrainRequest.hyperparameters:type_name -> worker.v1.TrainRequest.HyperparametersEntry
+	4, // 2: worker.v1.PredictResponse.predictions:type_name -> worker.v1.TreePrediction
+	1, // 3: worker.v1.Worker.Train:input_type -> worker.v1.TrainRequest
+	3, // 4: worker.v1.Worker.Predict:input_type -> worker.v1.PredictRequest
+	6, // 5: worker.v1.Worker.Health:input_type -> worker.v1.HealthRequest
+	2, // 6: worker.v1.Worker.Train:output_type -> worker.v1.TrainResponse
+	5, // 7: worker.v1.Worker.Predict:output_type -> worker.v1.PredictResponse
+	7, // 8: worker.v1.Worker.Health:output_type -> worker.v1.HealthResponse
+	6, // [6:9] is the sub-list for method output_type
+	3, // [3:6] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_worker_v1_worker_proto_init() }
@@ -529,7 +561,7 @@ func file_api_proto_worker_v1_worker_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_worker_v1_worker_proto_rawDesc), len(file_api_proto_worker_v1_worker_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

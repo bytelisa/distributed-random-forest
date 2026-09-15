@@ -11,19 +11,19 @@ import (
 //
 // Converts every value to a string and does some simple validation
 
-// allowedHyperparameters lists every RandomForest hyperparameter accepted
-// through the generic `hyperparameters` field, beyond n_estimators
+// allowedHyperparameters lists every decision tree hyperparameter accepted
+// through the generic `hyperparameters` field, beyond n_estimators.
+// Ensemble-level RandomForest options (bootstrap, max_samples, oob_score)
+// are not here: the bootstrap is drawn by the worker before each tree is
+// built, and a single DecisionTree doesn't accept them.
 var allowedHyperparameters = map[string]bool{
 	"max_depth":         true,
 	"max_features":      true,
 	"min_samples_split": true,
 	"min_samples_leaf":  true,
-	"bootstrap":         true,
-	"max_samples":       true,
 	"criterion":         true,
 	"max_leaf_nodes":    true,
 	"class_weight":      true,
-	"oob_score":         true,
 }
 
 // validateHyperparameters checks that every key is supported and has a
@@ -44,11 +44,6 @@ func validateHyperparameters(raw map[string]interface{}, taskType string) (map[s
 		result[key] = strValue
 	}
 
-	// scikit-learn requires bootstrap=True for oob_score
-	if oob, hasOOB := result["oob_score"]; hasOOB && oob == "true" && result["bootstrap"] != "true" {
-		return nil, fmt.Errorf("oob_score=true requires bootstrap=true")
-	}
-
 	return result, nil
 }
 
@@ -62,10 +57,6 @@ func validateHyperparameter(key string, value interface{}, taskType string) (str
 		return validateIntOrFraction(value, 1)
 	case "max_features":
 		return validateMaxFeatures(value)
-	case "max_samples":
-		return validatePositiveIntOrFractionOrNull(value)
-	case "bootstrap", "oob_score":
-		return validateBool(value)
 	case "criterion":
 		return validateCriterion(value, taskType)
 	case "class_weight":
@@ -78,14 +69,6 @@ func validateHyperparameter(key string, value interface{}, taskType string) (str
 
 func isNull(value interface{}) bool {
 	return value == nil
-}
-
-func validateBool(value interface{}) (string, error) {
-	b, ok := value.(bool)
-	if !ok {
-		return "", fmt.Errorf("expected a boolean")
-	}
-	return strconv.FormatBool(b), nil
 }
 
 // validatePositiveIntOrNull accepts a positive integer or null
@@ -113,13 +96,6 @@ func validateIntOrFraction(value interface{}, min int) (string, error) {
 		return strconv.FormatFloat(n, 'f', -1, 64), nil
 	}
 	return "", fmt.Errorf("expected an integer >= %d or a fraction in (0, 1]", min)
-}
-
-func validatePositiveIntOrFractionOrNull(value interface{}) (string, error) {
-	if isNull(value) {
-		return "None", nil
-	}
-	return validateIntOrFraction(value, 1)
 }
 
 // validateMaxFeatures accepts "sqrt", "log2", a positive integer, a fraction in (0, 1], or null.
@@ -163,7 +139,8 @@ func validateCriterion(value interface{}, taskType string) (string, error) {
 	return s, nil
 }
 
-// validateClassWeight only makes sense for classification: "balanced", "balanced_subsample", or null.
+// validateClassWeight only makes sense for classification: "balanced" or null.
+// ("balanced_subsample" is an ensemble-level option, a single tree rejects it.)
 func validateClassWeight(value interface{}, taskType string) (string, error) {
 	if taskType != "classification" {
 		return "", fmt.Errorf("class_weight is only valid for classification")
@@ -172,8 +149,8 @@ func validateClassWeight(value interface{}, taskType string) (string, error) {
 		return "None", nil
 	}
 	s, ok := value.(string)
-	if !ok || (s != "balanced" && s != "balanced_subsample") {
-		return "", fmt.Errorf(`expected "balanced", "balanced_subsample", or null`)
+	if !ok || s != "balanced" {
+		return "", fmt.Errorf(`expected "balanced" or null`)
 	}
 	return s, nil
 }

@@ -23,46 +23,87 @@ func NewTestStorageConfig(fakeS3Endpoint, bucket string) config.StorageConfig {
 	}
 }
 
-// FakePartitionDataset is an orchestrator.PartitionFunc that skips the real
-// Python partitioner and uploads numWorkers placeholder dataset-partition
-// files directly through S3Store. Fault-tolerance tests care about
-// partition *counts* and *keys*, never the CSV content - that's
-// pandas/scikit-learn territory, out of scope here.
-func FakePartitionDataset(ctx context.Context, storageCfg *config.StorageConfig, req *pb.TrainRequest, numWorkers int) error {
-	store, err := orchestrator.NewS3Store(ctx, storageCfg)
-	if err != nil {
-		return err
+// NewTestSystemConfig returns the system settings used by the tests: short
+// timeouts, a few retries per tree and no real backoff wait.
+func NewTestSystemConfig() config.SystemConfig {
+	return config.SystemConfig{
+		TimeoutTraining:     5,
+		TimeoutPrediction:   5,
+		TimeoutHealthCheck:  2,
+		DefaultNEstimators:  10,
+		MaxRetriesPerTree:   3,
+		RetryBackoffSeconds: 0,
 	}
-	for i := 0; i < numWorkers; i++ {
-		key := fmt.Sprintf("models/%s/dataset_partitions/part_%d.csv", req.ModelId, i)
-		if err := store.PutBytes(ctx, key, []byte("fake,partition,data\n")); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
-// FailingPartitionDataset always fails, simulating a partitioner crash
-// (e.g. bad dataset URL, source S3 unreachable).
-func FailingPartitionDataset(_ context.Context, _ *config.StorageConfig, _ *pb.TrainRequest, _ int) error {
-	return fmt.Errorf("fake partitioner failure")
+// TreeKey is the S3 key the worker uploads one trained tree to.
+func TreeKey(modelID string, treeIndex int32) string {
+	return fmt.Sprintf("models/%s/model_parts/tree_%d.joblib", modelID, treeIndex)
 }
 
-// TrainFuncUploadingPart returns a FakeWorker.TrainFunc that mimics the
-// real worker's final step on a successful Train (worker_service.py):
-// uploading models/{model_id}/model_parts/forest_part_{worker_index}.joblib
-// under a deterministic, index-based key. Needed by reconciliation tests
-// that check the resulting S3 state, not just which RPCs were sent.
-func TrainFuncUploadingPart(storageCfg *config.StorageConfig) func(context.Context, *pb.TrainRequest) (*pb.TrainResponse, error) {
+// TrainFuncUploadingTrees returns a FakeWorker.TrainFunc that mimics the
+// real worker's behavior on a successful Train (worker_service.py):
+// uploading models/{model_id}/model_parts/tree_{index}.joblib for every
+// requested tree index. Needed by tests that check the resulting S3 state,
+// not just which RPCs were sent.
+func TrainFuncUploadingTrees(storageCfg *config.StorageConfig) func(context.Context, *pb.TrainRequest) (*pb.TrainResponse, error) {
 	return func(ctx context.Context, req *pb.TrainRequest) (*pb.TrainResponse, error) {
 		store, err := orchestrator.NewS3Store(ctx, storageCfg)
 		if err != nil {
 			return nil, err
 		}
-		key := fmt.Sprintf("models/%s/model_parts/forest_part_%d.joblib", req.ModelId, req.WorkerIndex)
-		if err := store.PutBytes(ctx, key, []byte("fake-forest")); err != nil {
-			return nil, err
+		for _, idx := range req.TreeIndices {
+			if err := store.PutBytes(ctx, TreeKey(req.ModelId, idx), []byte("fake-tree")); err != nil {
+				return nil, err
+			}
 		}
 		return &pb.TrainResponse{Success: true, Message: "ok"}, nil
 	}
+}
+
+// ClassVote builds the TreePrediction of a classification tree that is
+// certain about one class.
+func ClassVote(class string) *pb.TreePrediction {
+	return &pb.TreePrediction{Classes: []string{class}, Probabilities: []float64{1}}
+}
+
+// ValueVote builds the TreePrediction of a regression tree.
+func ValueVote(value float64) *pb.TreePrediction {
+	return &pb.TreePrediction{Value: value}
+}
+
+// PredictFuncReturning returns a FakeWorker.PredictFunc that answers every
+// requested tree index with a copy of the given prediction.
+func PredictFuncReturning(pred *pb.TreePrediction) func(context.Context, *pb.PredictRequest) (*pb.PredictResponse, error) {
+	return func(_ context.Context, req *pb.PredictRequest) (*pb.PredictResponse, error) {
+		resp := &pb.PredictResponse{}
+		for range req.TreeIndices {
+			resp.Predictions = append(resp.Predictions, &pb.TreePrediction{
+				Classes:       pred.Classes,
+				Probabilities: pred.Probabilities,
+				Value:         pred.Value,
+			})
+		}
+		return resp, nil
+	}
+}
+
+// SeedTrainedModel writes to the fake S3 the state a completed training
+// leaves behind: the metadata and one tree file per index.
+func SeedTrainedModel(ctx context.Context, store *orchestrator.S3Store, modelID string, nEstimators int32) error {
+	meta := orchestrator.TrainRequestMetadata{
+		DatasetURL:   "data/iris.csv",
+		TaskType:     int32(pb.TaskType_CLASSIFICATION_TASK),
+		TargetColumn: "target",
+		NEstimators:  nEstimators,
+	}
+	if err := store.PutJSON(ctx, "models/"+modelID+"/train_request.json", meta); err != nil {
+		return err
+	}
+	for i := int32(0); i < nEstimators; i++ {
+		if err := store.PutBytes(ctx, TreeKey(modelID, i), []byte("fake-tree")); err != nil {
+			return err
+		}
+	}
+	return nil
 }

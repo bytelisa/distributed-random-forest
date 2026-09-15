@@ -14,10 +14,10 @@ enum TaskType {
 // EXPORTED SERVICES
 
 service Worker {
-  // Start training a subset of trees
+  // Train the given subset of trees of one forest
   rpc Train (TrainRequest) returns (TrainResponse);
 
-  // Inference on given input
+  // Inference on given input, using the given subset of trees
   rpc Predict (PredictRequest) returns (PredictResponse);
 
   // Health check for fault tolerance
@@ -30,31 +30,27 @@ service Worker {
 message TrainRequest {
   string model_id = 1;
 
-  // this url will redirect each worker to a specific partition of the dataset
+  // Object key of the full training set, identical for every worker.
+  // Each tree draws its own bootstrap sample from it.
   string dataset_url = 2;
 
   TaskType task_type = 3;
 
-  // RandomForest hyperparameters
-  int32 n_estimators = 4;
-  reserved 5;
+  reserved 4, 5, 7, 8, 9;
 
   string target_column = 6;
 
-  // Necessary for uncorrelated forests
-  int32 random_seed = 7;
-
-  // NEW: Fields for deterministic dataset partitioning
-  int32 worker_index = 8;
-  int32 total_workers = 9;
-
-  // Additional RandomForest hyperparameters (max_depth, max_features,
-  // min_samples_split, min_samples_leaf, bootstrap, max_samples, criterion,
-  // max_leaf_nodes, class_weight, oob_score), validated and converted to
-  // strings by the master (internal/api) before being sent here. The
-  // worker converts each value back to the right Python type generically
-  // and forwards them as kwargs to scikit-learn.
+  // Decision tree hyperparameters (max_depth, max_features,
+  // min_samples_split, min_samples_leaf, criterion, max_leaf_nodes,
+  // class_weight), validated and converted to strings by the master
+  // (internal/api) before being sent here. The worker converts each value
+  // back to the right Python type generically and forwards them to
+  // scikit-learn.
   map<string, string> hyperparameters = 10;
+
+  // Indices (0..n_estimators-1) of the trees this worker has to train.
+  // Not necessarily contiguous: a retry carries only the trees still missing.
+  repeated int32 tree_indices = 11;
 }
 
 message TrainResponse {
@@ -66,14 +62,24 @@ message PredictRequest {
   string model_id = 1;
   repeated float features = 2;
 
-  // fields necessary to partition trained trees between the workers
-  int32 worker_index = 3;  // Indice del worker (0, 1, 2...)
-  int32 total_workers = 4; // Totale worker attivi
+  reserved 3, 4;
+
+  // Indices of the trees this worker has to load and query.
+  repeated int32 tree_indices = 5;
+}
+
+// Output of a single tree. Classification trees fill classes/probabilities
+// (a tree only knows the classes seen in its own bootstrap sample, so the
+// labels travel with the probabilities); regression trees fill value.
+message TreePrediction {
+  repeated string classes = 1;
+  repeated double probabilities = 2;
+  double value = 3;
 }
 
 message PredictResponse {
-  // Changed from single string to repeated to allow master-side global aggregation
-  repeated string predictions = 1;
+  // One entry per tree, aggregated by the master (no local aggregation)
+  repeated TreePrediction predictions = 1;
 }
 
 message HealthRequest {}

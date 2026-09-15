@@ -5,10 +5,11 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
-	"os/exec"
-	"strconv"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +19,10 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+// ErrModelNotFound is returned by PredictDistributed when no training
+// metadata exists for the requested model_id.
+var ErrModelNotFound = errors.New("model not found")
+
 // WorkerClient wraps the gRPC client and the connection
 type WorkerClient struct {
 	Address string
@@ -25,25 +30,21 @@ type WorkerClient struct {
 	Conn    *grpc.ClientConn
 }
 
-// PartitionFunc partitions the source dataset for req into numWorkers parts
-// and uploads them to S3 under models/{req.ModelId}/dataset_partitions/.
-// Exposed as a WorkerPool field (instead of being hardcoded) so tests can
-// substitute a fake that doesn't require a Python interpreter.
-type PartitionFunc func(ctx context.Context, storageCfg *config.StorageConfig, req *pb.TrainRequest, numWorkers int) error
-
 // WorkerPool manages the list of connected workers
 type WorkerPool struct {
 	Workers            []*WorkerClient
 	HealthCheckTimeout time.Duration
-	PartitionDataset   PartitionFunc
+	MaxRetriesPerTree  int
+	RetryBackoff       time.Duration
 }
 
 // NewWorkerPool initializes connections to all workers listed in the config
-func NewWorkerPool(addresses []string, healthTimeout int) (*WorkerPool, error) {
+func NewWorkerPool(addresses []string, sys *config.SystemConfig) (*WorkerPool, error) {
 	pool := &WorkerPool{
 		Workers:            make([]*WorkerClient, 0, len(addresses)),
-		HealthCheckTimeout: time.Duration(healthTimeout) * time.Second,
-		PartitionDataset:   runPartitionerScript,
+		HealthCheckTimeout: time.Duration(sys.TimeoutHealthCheck) * time.Second,
+		MaxRetriesPerTree:  sys.MaxRetriesPerTree,
+		RetryBackoff:       time.Duration(sys.RetryBackoffSeconds) * time.Second,
 	}
 
 	for _, addr := range addresses {
@@ -108,25 +109,88 @@ func (p *WorkerPool) getHealthyWorkers(ctx context.Context) ([]*WorkerClient, er
 	return healthyWorkers, nil
 }
 
-// pickReplacementWorker returns any healthy worker in candidates other than failed one,
-// or nil if none is available
-func pickReplacementWorker(candidates []*WorkerClient, failed *WorkerClient) *WorkerClient {
-	for _, w := range candidates {
-		if w.Address != failed.Address {
-			return w
+// waitForReplacement returns a healthy worker to hand a failed chunk of
+// trees to, preferring one other than the worker that just failed. While no
+// worker is healthy it waits RetryBackoff between health checks, until ctx expires.
+func (p *WorkerPool) waitForReplacement(ctx context.Context, failed *WorkerClient) (*WorkerClient, error) {
+	for {
+		healthy, err := p.getHealthyWorkers(ctx)
+		if err == nil {
+			for _, w := range healthy {
+				if w.Address != failed.Address {
+					return w, nil
+				}
+			}
+			return healthy[0], nil
+		}
+
+		log.Printf("[Orchestrator] No healthy worker available, retrying in %s.", p.RetryBackoff)
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("no healthy worker became available: %w", ctx.Err())
+		case <-time.After(p.RetryBackoff):
 		}
 	}
-	return nil
 }
 
-// TrainDistributed splits the work among available (healthy) workers only and waits for completion
-func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest, storageCfg *config.StorageConfig) (*pb.TrainResponse, error) {
+// splitIndices splits indices into n contiguous chunks, as even as possible
+// (the remainder goes to the first chunks). Chunks may be empty when there
+// are more workers than indices.
+func splitIndices(indices []int32, n int) [][]int32 {
+	chunks := make([][]int32, n)
+	base := len(indices) / n
+	rest := len(indices) % n
+	start := 0
+	for i := 0; i < n; i++ {
+		size := base
+		if i < rest {
+			size++
+		}
+		chunks[i] = indices[start : start+size]
+		start += size
+	}
+	return chunks
+}
+
+func rangeIndices(n int32) []int32 {
+	indices := make([]int32, n)
+	for i := range indices {
+		indices[i] = int32(i)
+	}
+	return indices
+}
+
+// TrainJob describes one forest to train. NEstimators is the total number
+// of trees: the master decides which worker builds which of them.
+type TrainJob struct {
+	ModelID         string
+	DatasetURL      string
+	TaskType        pb.TaskType
+	TargetColumn    string
+	NEstimators     int32
+	Hyperparameters map[string]string
+}
+
+// request builds the gRPC message asking a worker for a subset of the trees.
+func (j TrainJob) request(indices []int32) *pb.TrainRequest {
+	return &pb.TrainRequest{
+		ModelId:         j.ModelID,
+		DatasetUrl:      j.DatasetURL,
+		TaskType:        j.TaskType,
+		TargetColumn:    j.TargetColumn,
+		Hyperparameters: j.Hyperparameters,
+		TreeIndices:     indices,
+	}
+}
+
+// TrainDistributed persists the job, splits the forest's trees among the
+// healthy workers and waits for every tree to be on S3.
+func (p *WorkerPool) TrainDistributed(ctx context.Context, job TrainJob, storageCfg *config.StorageConfig) (*pb.TrainResponse, error) {
 
 	activeWorkers, err := p.getHealthyWorkers(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("training failed: %w", err)
 	}
-	numWorkers := len(activeWorkers)
 
 	// 1. PERSIST TRAIN REQUEST METADATA
 	// Immediately for fault tolerance
@@ -135,94 +199,21 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 		return nil, fmt.Errorf("failed to create S3 client: %w", err)
 	}
 
-	trainRequest := TrainRequestMetadata{
-		DatasetURL:      req.DatasetUrl,
-		TaskType:        int32(req.TaskType),
-		TargetColumn:    req.TargetColumn,
-		NEstimators:     req.NEstimators,
-		TotalPartitions: int32(numWorkers),
-		Hyperparameters: req.Hyperparameters,
+	meta := TrainRequestMetadata{
+		DatasetURL:      job.DatasetURL,
+		TaskType:        int32(job.TaskType),
+		TargetColumn:    job.TargetColumn,
+		NEstimators:     job.NEstimators,
+		Hyperparameters: job.Hyperparameters,
 	}
-	metaKey := fmt.Sprintf("models/%s/train_request.json", req.ModelId)
-	if err := store.PutJSON(ctx, metaKey, trainRequest); err != nil {
+	if err := store.PutJSON(ctx, trainRequestKey(job.ModelID), meta); err != nil {
 		return nil, fmt.Errorf("failed to persist train request metadata: %w", err)
 	}
 
-	log.Printf("[Orchestrator] Running partitioner script for model %s into %d parts...", req.ModelId, numWorkers)
+	// 2. DISTRIBUTE THE TREES
+	log.Printf("[Orchestrator] Distributing %d trees of model %s over %d workers.", job.NEstimators, job.ModelID, len(activeWorkers))
 
-	// 2. RUN DATASET PARTITIONER
-	if err := p.PartitionDataset(ctx, storageCfg, req, numWorkers); err != nil {
-		return nil, fmt.Errorf("partitioning failed: %w", err)
-	}
-
-	// DEBUG
-	log.Printf("[Orchestrator] Partitioner script finished successfully.")
-
-	// 3. DISTRIBUTE TRAINING TASKS
-
-	// DEBUG
-	datasetFolder := fmt.Sprintf("models/%s/dataset_partitions/", req.ModelId)
-	log.Printf("[Orchestrator] Distributing training tasks. Dataset folder: %s", datasetFolder)
-
-	var wg sync.WaitGroup
-	errChan := make(chan error, numWorkers)
-
-	for i, worker := range activeWorkers {
-		wg.Add(1)
-		go func(w *WorkerClient, idx int) {
-			defer wg.Done()
-
-			// We pass the base folder, not the specific file
-			// The worker will figure out which file to grab
-			datasetFolder := fmt.Sprintf("models/%s/dataset_partitions/", req.ModelId)
-
-			//DEBUG
-			log.Printf("[Orchestrator] Sending Train request to Worker %d: %d trees on dataset folder.", idx, req.NEstimators)
-
-			workerReq := &pb.TrainRequest{
-				ModelId:         req.ModelId,
-				DatasetUrl:      datasetFolder,
-				TaskType:        req.TaskType,
-				TargetColumn:    req.TargetColumn,
-				NEstimators:     req.NEstimators, // Each worker trains a FULL forest (e.g., 100 trees)
-				Hyperparameters: req.Hyperparameters,
-				WorkerIndex:     int32(idx),
-				TotalWorkers:    int32(numWorkers),
-			}
-
-			resp, err := w.Client.Train(ctx, workerReq)
-			if err == nil && resp.Success {
-				return
-			}
-
-			log.Printf("[Orchestrator] Worker %d (partition %d) failed: %v - looking for a healthy peer to reassign to, within this same call.", idx, idx, err)
-
-			// Immediate in-call retry: partitions are addressed by index,
-			// not by which physical worker handles them (stateless design),
-			// so any other currently healthy worker can pick this one up
-			replacement := pickReplacementWorker(activeWorkers, w)
-			if replacement == nil {
-				errChan <- fmt.Errorf("partition %d failed on worker %s and no other healthy worker is available to retry: %v", idx, w.Address, err)
-				return
-			}
-
-			resp, err = replacement.Client.Train(ctx, workerReq)
-			if err != nil || !resp.Success {
-				errChan <- fmt.Errorf("partition %d failed on worker %s, retry on worker %s also failed: %v", idx, w.Address, replacement.Address, err)
-				return
-			}
-
-			log.Printf("[Orchestrator] Partition %d recovered on worker %s after worker %s failed.", idx, replacement.Address, w.Address)
-		}(worker, i)
-	}
-
-	wg.Wait()
-	close(errChan)
-
-	// Check if any worker failed during execution
-	// todo more fault tolerance here?
-	if len(errChan) > 0 {
-		err := <-errChan
+	if err := p.runTraining(ctx, store, job, rangeIndices(job.NEstimators), activeWorkers); err != nil {
 		return &pb.TrainResponse{
 			Success: false,
 			Message: fmt.Sprintf("Distributed training failed mid-process. Error: %v", err),
@@ -231,8 +222,119 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 
 	return &pb.TrainResponse{
 		Success: true,
-		Message: fmt.Sprintf("Training completed successfully on %d workers.", numWorkers),
+		Message: fmt.Sprintf("Training completed successfully on %d workers.", len(activeWorkers)),
 	}, nil
+}
+
+// runTraining trains the given trees and keeps the failure marker of the
+// model in sync with the outcome: written when the retry budget is
+// exhausted, removed once the trees are all on S3.
+func (p *WorkerPool) runTraining(ctx context.Context, store *S3Store, job TrainJob, indices []int32, workers []*WorkerClient) error {
+	if err := p.trainTrees(ctx, store, job, indices, workers); err != nil {
+		if markErr := store.PutJSON(ctx, trainingFailedKey(job.ModelID), TrainingFailedMarker{Message: err.Error()}); markErr != nil {
+			log.Printf("[Orchestrator] Failed to persist failure marker for model %s: %v", job.ModelID, markErr)
+		}
+		return err
+	}
+	if err := store.DeleteKey(ctx, trainingFailedKey(job.ModelID)); err != nil {
+		log.Printf("[Orchestrator] Failed to clear failure marker for model %s: %v", job.ModelID, err)
+	}
+	return nil
+}
+
+// trainTrees hands one contiguous chunk of tree indices to each worker, in
+// parallel, and returns once every chunk either completed or gave up.
+func (p *WorkerPool) trainTrees(ctx context.Context, store *S3Store, job TrainJob, indices []int32, workers []*WorkerClient) error {
+	chunks := splitIndices(indices, len(workers))
+
+	var wg sync.WaitGroup
+	errChan := make(chan error, len(workers))
+
+	for i, worker := range workers {
+		if len(chunks[i]) == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(w *WorkerClient, chunk []int32) {
+			defer wg.Done()
+			if err := p.trainChunkWithRetry(ctx, store, job, chunk, w); err != nil {
+				errChan <- err
+			}
+		}(worker, chunks[i])
+	}
+
+	wg.Wait()
+	close(errChan)
+
+	var msgs []string
+	for err := range errChan {
+		msgs = append(msgs, err.Error())
+	}
+	if len(msgs) > 0 {
+		return errors.New(strings.Join(msgs, "; "))
+	}
+	return nil
+}
+
+// trainChunkWithRetry asks worker to train chunk. When the call fails, only
+// the trees that didn't make it to S3 are reassigned to another healthy
+// worker, each tree at most MaxRetriesPerTree times.
+func (p *WorkerPool) trainChunkWithRetry(ctx context.Context, store *S3Store, job TrainJob, chunk []int32, worker *WorkerClient) error {
+	attempts := make(map[int32]int, len(chunk))
+	pending := chunk
+
+	for {
+		for _, idx := range pending {
+			attempts[idx]++
+		}
+
+		log.Printf("[Orchestrator] Sending %d trees of model %s to worker %s.", len(pending), job.ModelID, worker.Address)
+		resp, err := worker.Client.Train(ctx, job.request(pending))
+		if err == nil && resp.Success {
+			return nil
+		}
+		failure := describeFailure(err, resp)
+		log.Printf("[Orchestrator] Worker %s failed on model %s: %s", worker.Address, job.ModelID, failure)
+
+		// Trees uploaded before the failure don't need to be retrained
+		present, err := store.listTreeIndices(ctx, job.ModelID)
+		if err != nil {
+			return fmt.Errorf("model %s: failed to check trees on S3 after worker failure: %w", job.ModelID, err)
+		}
+		var missing []int32
+		for _, idx := range pending {
+			if !present[idx] {
+				missing = append(missing, idx)
+			}
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+
+		for _, idx := range missing {
+			if attempts[idx] > p.MaxRetriesPerTree {
+				return fmt.Errorf("tree %d of model %s failed %d times, giving up: %s", idx, job.ModelID, attempts[idx], failure)
+			}
+		}
+
+		replacement, err := p.waitForReplacement(ctx, worker)
+		if err != nil {
+			return fmt.Errorf("model %s: trees %v could not be reassigned: %w", job.ModelID, missing, err)
+		}
+		log.Printf("[Orchestrator] Reassigning trees %v of model %s to worker %s.", missing, job.ModelID, replacement.Address)
+		pending = missing
+		worker = replacement
+	}
+}
+
+func describeFailure(err error, resp *pb.TrainResponse) string {
+	if err != nil {
+		return err.Error()
+	}
+	if resp != nil {
+		return resp.Message
+	}
+	return "unknown failure"
 }
 
 // THOUGHTS:
@@ -243,61 +345,75 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 // A worker can use trees he didn't train for inference purposes
 // This also solves (partly) fault tolerance --> no lost state (no cached trained trees)
 
-// PredictDistributed is responsible for the aggregation of inference results coming from the workers (Bagging - Aggregation Phase)
+// PredictDistributed splits the forest's trees among the healthy workers,
+// collects one prediction per tree and aggregates them (Bagging - Aggregation Phase).
 // taskType should be "classification" or "regression"
-func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequest, taskType string) (string, error) {
+func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequest, taskType string, storageCfg *config.StorageConfig) (string, error) {
 
 	// DYNAMIC HEALTH CHECK
-	// Needed to compute the correct indices and distribute work accordingly
 	activeWorkers, err := p.getHealthyWorkers(ctx)
 	if err != nil {
 		return "", err
 	}
-
 	numWorkers := len(activeWorkers)
 	log.Printf("[Orchestrator] Active workers for inference: %d (configured: %d)", numWorkers, len(p.Workers))
 
-	resultsChan := make(chan []string, numWorkers)
+	// The forest size comes from the persisted request, the trees must all be there
+	store, err := NewS3Store(ctx, storageCfg)
+	if err != nil {
+		return "", fmt.Errorf("failed to create S3 client: %w", err)
+	}
+	var meta TrainRequestMetadata
+	found, err := store.GetJSON(ctx, trainRequestKey(req.ModelId), &meta)
+	if err != nil {
+		return "", fmt.Errorf("failed to read metadata of model %s: %w", req.ModelId, err)
+	}
+	if !found {
+		return "", ErrModelNotFound
+	}
+	present, err := store.listTreeIndices(ctx, req.ModelId)
+	if err != nil {
+		return "", fmt.Errorf("failed to list trees of model %s: %w", req.ModelId, err)
+	}
+	if int32(len(present)) < meta.NEstimators {
+		return "", fmt.Errorf("model %s is not ready: %d of %d trees missing", req.ModelId, meta.NEstimators-int32(len(present)), meta.NEstimators)
+	}
+
+	chunks := splitIndices(rangeIndices(meta.NEstimators), numWorkers)
+	resultsChan := make(chan []*pb.TreePrediction, numWorkers)
+	errChan := make(chan error, numWorkers)
 	var wg sync.WaitGroup
 
 	log.Printf("[Orchestrator] Broadcasting prediction request to %d workers...", numWorkers)
 
-	// Loop on active workers
-	for i, worker := range activeWorkers { // 'i' goes from 0 to (numWorkers-1)
+	for i, worker := range activeWorkers {
+		if len(chunks[i]) == 0 {
+			continue
+		}
 		wg.Add(1)
-		go func(w *WorkerClient, idx int) {
+		go func(w *WorkerClient, chunk []int32) {
 			defer wg.Done()
-
-			workerReq := &pb.PredictRequest{
-				ModelId:      req.ModelId,
-				Features:     req.Features,
-				WorkerIndex:  int32(idx),
-				TotalWorkers: int32(numWorkers), // alive workers
-			}
-
-			resp, err := w.Client.Predict(ctx, workerReq)
+			preds, err := p.predictChunkWithRetry(ctx, req, chunk, w)
 			if err != nil {
-				// todo manage fault tolerance here: what happens if a worker fails after it gets assigned a model part?
-				log.Printf("[Orchestrator] Warning: Worker %s failed predict: %v", w.Address, err)
+				errChan <- err
 				return
 			}
-
-			if len(resp.Predictions) > 0 {
-				resultsChan <- resp.Predictions
-			}
-		}(worker, i)
+			resultsChan <- preds
+		}(worker, chunks[i])
 	}
 
-	go func() {
-		wg.Wait()
-		close(resultsChan)
-	}()
+	wg.Wait()
+	close(resultsChan)
+	close(errChan)
+
+	if len(errChan) > 0 {
+		return "", fmt.Errorf("prediction failed: %w", <-errChan)
+	}
 
 	// COLLECT PREDICTIONS
 	// We merge all partial lists into one global list of votes/values
 	// Note: Only aggregate once (no local aggregation on worker) in order to introduce less error.
-	var globalPredictions []string
-
+	var globalPredictions []*pb.TreePrediction
 	for partialList := range resultsChan {
 		globalPredictions = append(globalPredictions, partialList...)
 	}
@@ -310,56 +426,93 @@ func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequ
 
 	// AGGREGATION
 	if taskType == "regression" {
-		return aggregateRegression(globalPredictions), nil
-	} else {
-		return aggregateClassification(globalPredictions), nil
+		values := make([]float64, len(globalPredictions))
+		for i, pred := range globalPredictions {
+			values[i] = pred.Value
+		}
+		return aggregateRegression(values), nil
+	}
+	return aggregateClassification(globalPredictions), nil
+}
+
+// predictChunkWithRetry asks worker for the predictions of chunk. When the
+// call fails, the whole chunk is reassigned to another healthy worker, at
+// most MaxRetriesPerTree times.
+func (p *WorkerPool) predictChunkWithRetry(ctx context.Context, req *pb.PredictRequest, chunk []int32, worker *WorkerClient) ([]*pb.TreePrediction, error) {
+	for attempt := 1; ; attempt++ {
+		workerReq := &pb.PredictRequest{
+			ModelId:     req.ModelId,
+			Features:    req.Features,
+			TreeIndices: chunk,
+		}
+
+		resp, err := worker.Client.Predict(ctx, workerReq)
+		if err == nil {
+			return resp.Predictions, nil
+		}
+		log.Printf("[Orchestrator] Worker %s failed predict on model %s: %v", worker.Address, req.ModelId, err)
+
+		if attempt > p.MaxRetriesPerTree {
+			return nil, fmt.Errorf("trees %v of model %s failed %d times, giving up: %v", chunk, req.ModelId, attempt, err)
+		}
+
+		replacement, err := p.waitForReplacement(ctx, worker)
+		if err != nil {
+			return nil, fmt.Errorf("trees %v of model %s could not be reassigned: %w", chunk, req.ModelId, err)
+		}
+		log.Printf("[Orchestrator] Reassigning trees %v of model %s to worker %s.", chunk, req.ModelId, replacement.Address)
+		worker = replacement
 	}
 }
 
 // --------------------------- Aggregation Strategies ---------------------
 
 // aggregateRegression calculates the mean of the results
-func aggregateRegression(results []string) string {
-	var sum float64
-	count := 0
-
-	for _, r := range results {
-		val, err := strconv.ParseFloat(r, 64)
-		if err == nil {
-			sum += val
-			count++
-		} else {
-			log.Printf("[Orchestrator] Error parsing float result: %s", r)
-		}
-	}
-
-	if count == 0 {
+func aggregateRegression(values []float64) string {
+	if len(values) == 0 {
 		return "0"
 	}
 
-	mean := sum / float64(count)
+	var sum float64
+	for _, v := range values {
+		sum += v
+	}
+
+	mean := sum / float64(len(values))
 	return fmt.Sprintf("%f", mean)
 }
 
-// aggregateClassification calculates the mode (majority vote)
-func aggregateClassification(results []string) string {
-	counts := make(map[string]int)
+// aggregateClassification does soft voting: class probabilities are summed
+// over all trees (a class a tree never saw contributes 0) and the class with
+// the highest total wins. Ties go to the first class in sorted order, as in
+// scikit-learn's argmax.
+func aggregateClassification(predictions []*pb.TreePrediction) string {
+	sums := make(map[string]float64)
 
-	for _, r := range results {
-		counts[r]++
-	}
-
-	var bestVal string
-	maxCount := -1
-
-	for val, c := range counts {
-		if c > maxCount {
-			maxCount = c
-			bestVal = val
+	for _, pred := range predictions {
+		for i, class := range pred.Classes {
+			if i < len(pred.Probabilities) {
+				sums[class] += pred.Probabilities[i]
+			}
 		}
 	}
 
-	return bestVal
+	classes := make([]string, 0, len(sums))
+	for class := range sums {
+		classes = append(classes, class)
+	}
+	sort.Strings(classes)
+
+	var best string
+	bestSum := -1.0
+	for _, class := range classes {
+		if sums[class] > bestSum {
+			bestSum = sums[class]
+			best = class
+		}
+	}
+
+	return best
 }
 
 // Close closes all connections
@@ -367,23 +520,4 @@ func (p *WorkerPool) Close() {
 	for _, w := range p.Workers {
 		w.Conn.Close()
 	}
-}
-
-// runPartitionerScript is the default PartitionFunc: it shells out to the
-// Python partitioner script. Requires "python" to be resolvable in PATH.
-func runPartitionerScript(ctx context.Context, storageCfg *config.StorageConfig, req *pb.TrainRequest, numWorkers int) error {
-	cmd := exec.CommandContext(ctx, "python", "scripts/partitioner.py",
-		"--s3-endpoint", storageCfg.Endpoint,
-		"--s3-access-key", storageCfg.AccessKey,
-		"--s3-secret-key", storageCfg.SecretKey,
-		"--s3-bucket", storageCfg.Bucket,
-		"--source-key", req.DatasetUrl, // e.g., "data/iris.csv" (assuming we clean the s3:// prefix before)
-		"--model-id", req.ModelId,
-		"--num-partitions", fmt.Sprintf("%d", numWorkers),
-	)
-
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("%w, logs: %s", err, string(output))
-	}
-	return nil
 }

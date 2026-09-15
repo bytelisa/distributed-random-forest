@@ -55,6 +55,14 @@ type SystemConfig struct {
 	TimeoutTraining    int `mapstructure:"timeout_training_seconds"`
 	TimeoutPrediction  int `mapstructure:"timeout_prediction_seconds"`
 	TimeoutHealthCheck int `mapstructure:"timeout_health_check_seconds"`
+
+	// DefaultNEstimators is used when a train request doesn't specify n_estimators
+	DefaultNEstimators int `mapstructure:"default_n_estimators"`
+	// MaxRetriesPerTree bounds how many times a single tree is reassigned
+	// after a worker failure (training and prediction) before giving up
+	MaxRetriesPerTree int `mapstructure:"max_retries_per_tree"`
+	// RetryBackoffSeconds is the wait between health checks while no worker is healthy
+	RetryBackoffSeconds int `mapstructure:"retry_backoff_seconds"`
 }
 
 // LoadConfig reads the config file

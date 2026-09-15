@@ -28,9 +28,9 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type WorkerClient interface {
-	// Start training a subset of trees
+	// Train the given subset of trees of one forest
 	Train(ctx context.Context, in *TrainRequest, opts ...grpc.CallOption) (*TrainResponse, error)
-	// Inference on given input
+	// Inference on given input, using the given subset of trees
 	Predict(ctx context.Context, in *PredictRequest, opts ...grpc.CallOption) (*PredictResponse, error)
 	// Health check for fault tolerance
 	Health(ctx context.Context, in *HealthRequest, opts ...grpc.CallOption) (*HealthResponse, error)
@@ -78,9 +78,9 @@ func (c *workerClient) Health(ctx context.Context, in *HealthRequest, opts ...gr
 // All implementations must embed UnimplementedWorkerServer
 // for forward compatibility.
 type WorkerServer interface {
-	// Start training a subset of trees
+	// Train the given subset of trees of one forest
 	Train(context.Context, *TrainRequest) (*TrainResponse, error)
-	// Inference on given input
+	// Inference on given input, using the given subset of trees
 	Predict(context.Context, *PredictRequest) (*PredictResponse, error)
 	// Health check for fault tolerance
 	Health(context.Context, *HealthRequest) (*HealthResponse, error)

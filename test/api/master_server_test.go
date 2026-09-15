@@ -15,11 +15,10 @@ import (
 	pb "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1"
 	"github.com/bytelisa/distributed-random-forest/internal/api"
 	"github.com/bytelisa/distributed-random-forest/internal/config"
+	"github.com/bytelisa/distributed-random-forest/internal/orchestrator"
 	"github.com/bytelisa/distributed-random-forest/test/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
 func newTestServer(t *testing.T) (*api.Server, *testutil.FakeWorker, *testutil.FakeS3) {
@@ -32,16 +31,11 @@ func newTestServer(t *testing.T) (*api.Server, *testutil.FakeWorker, *testutil.F
 	cfg := &config.Config{
 		Workers: config.WorkerConfig{Addresses: []string{worker.Address}},
 		Storage: storageCfg,
-		System: config.SystemConfig{
-			TimeoutTraining:    5,
-			TimeoutPrediction:  5,
-			TimeoutHealthCheck: 2,
-		},
+		System:  testutil.NewTestSystemConfig(),
 	}
 
 	srv, err := api.NewServer(cfg)
 	require.NoError(t, err)
-	srv.WorkerPool().PartitionDataset = testutil.FakePartitionDataset
 
 	return srv, worker, fakeS3
 }
@@ -69,6 +63,9 @@ func TestE1_TrainValidation(t *testing.T) {
 		{"missing dataset_url", `{"task_type":"classification","target_column":"y"}`},
 		{"missing target_column", `{"task_type":"classification","dataset_url":"data/iris.csv"}`},
 		{"invalid task_type", `{"task_type":"bogus","dataset_url":"data/iris.csv","target_column":"y"}`},
+		{"negative n_estimators", `{"task_type":"classification","dataset_url":"data/iris.csv","target_column":"y","n_estimators":-1}`},
+		{"ensemble-only hyperparameter", `{"task_type":"classification","dataset_url":"data/iris.csv","target_column":"y","hyperparameters":{"bootstrap":true}}`},
+		{"class_weight balanced_subsample", `{"task_type":"classification","dataset_url":"data/iris.csv","target_column":"y","hyperparameters":{"class_weight":"balanced_subsample"}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -106,16 +103,17 @@ func TestE2_ModelStatusUnknownID(t *testing.T) {
 func TestE3_TrainRespondsImmediatelyAndTrainsInBackground(t *testing.T) {
 	srv, worker, fakeS3 := newTestServer(t)
 	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
-	uploadPart := testutil.TrainFuncUploadingPart(&storageCfg)
+	uploadTrees := testutil.TrainFuncUploadingTrees(&storageCfg)
 
 	block := make(chan struct{})
 	started := make(chan struct{})
 	worker.TrainFunc = func(ctx context.Context, req *pb.TrainRequest) (*pb.TrainResponse, error) {
 		close(started)
 		<-block // held open until the test explicitly unblocks it
-		return uploadPart(ctx, req)
+		return uploadTrees(ctx, req)
 	}
 
+	// n_estimators omitted: the configured default applies.
 	body := `{"task_type":"classification","dataset_url":"data/iris.csv","target_column":"species"}`
 	req := httptest.NewRequest(http.MethodPost, "/train", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -146,6 +144,11 @@ func TestE3_TrainRespondsImmediatelyAndTrainsInBackground(t *testing.T) {
 		t.Fatal("background training never started")
 	}
 
+	// The worker was asked for the default-sized forest.
+	calls := worker.TrainCalls()
+	require.Len(t, calls, 1)
+	assert.Len(t, calls[0].TreeIndices, testutil.NewTestSystemConfig().DefaultNEstimators)
+
 	// GET /models/{id} sees "training" while the worker is still blocked -
 	// the request context that produced the 202 is long gone by now, which
 	// proves the background goroutine runs on its own context, not the
@@ -166,9 +169,10 @@ func TestE3_TrainRespondsImmediatelyAndTrainsInBackground(t *testing.T) {
 		if rec.Code == http.StatusOK {
 			var got api.TrainResponse
 			require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-			if got.Status != "training" {
+			if got.Status == "ready" {
 				return
 			}
+			require.Equal(t, "training", got.Status)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -200,27 +204,40 @@ func TestE4_PredictValidation(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// E5 — POST /predict/{id} su modello non pronto o inesistente
+// E5 — POST /predict/{id} su modello inesistente o non pronto
 // ---------------------------------------------------------------------
 
-func TestE5_PredictOnNonexistentModel(t *testing.T) {
-	srv, worker, _ := newTestServer(t)
-
-	// Same failure a real worker produces today when it finds no model
-	// parts for this model_id (see worker_service.py:140-142 /
-	// worker.proto:66-69) - PredictDistributed treats it like any other
-	// failed worker.
-	worker.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
-		return nil, status.Error(codes.Internal, `Protocol message PredictResponse has no "prediction" field.`)
-	}
+func TestE5_PredictOnNonexistentOrUnreadyModel(t *testing.T) {
+	srv, worker, fakeS3 := newTestServer(t)
+	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
+	store, err := orchestrator.NewS3Store(context.Background(), &storageCfg)
+	require.NoError(t, err)
 
 	body := `{"task_type":"classification","features":[1,2,3]}`
-	rec := doJSON(t, srv, http.MethodPost, "/predict/does-not-exist", body)
 
-	require.Equal(t, http.StatusInternalServerError, rec.Code)
+	t.Run("unknown model_id -> 404", func(t *testing.T) {
+		rec := doJSON(t, srv, http.MethodPost, "/predict/does-not-exist", body)
+		require.Equal(t, http.StatusNotFound, rec.Code)
 
-	var got map[string]any
-	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
-	assert.Contains(t, got["error"], "Distributed inference failed")
-	assert.Contains(t, got["error"], "no workers returned valid results")
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		assert.Equal(t, "does-not-exist", got["model_id"])
+	})
+
+	t.Run("training still incomplete -> 500", func(t *testing.T) {
+		meta := orchestrator.TrainRequestMetadata{NEstimators: 3}
+		require.NoError(t, store.PutJSON(context.Background(), "models/half-trained/train_request.json", meta))
+		require.NoError(t, store.PutBytes(context.Background(), testutil.TreeKey("half-trained", 0), []byte("t")))
+
+		rec := doJSON(t, srv, http.MethodPost, "/predict/half-trained", body)
+		require.Equal(t, http.StatusInternalServerError, rec.Code)
+
+		var got map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &got))
+		assert.Contains(t, got["error"], "Distributed inference failed")
+		assert.Contains(t, got["error"], "not ready")
+	})
+
+	// In both cases nothing was sent to the workers.
+	assert.Empty(t, worker.PredictCalls())
 }

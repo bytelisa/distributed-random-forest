@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n api/proto/worker/v1/worker.proto\x12\tworker.v1\"\xd1\x02\n\x0cTrainRequest\x12\x10\n\x08model_id\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x61taset_url\x18\x02 \x01(\t\x12&\n\ttask_type\x18\x03 \x01(\x0e\x32\x13.worker.v1.TaskType\x12\x14\n\x0cn_estimators\x18\x04 \x01(\x05\x12\x15\n\rtarget_column\x18\x06 \x01(\t\x12\x13\n\x0brandom_seed\x18\x07 \x01(\x05\x12\x14\n\x0cworker_index\x18\x08 \x01(\x05\x12\x15\n\rtotal_workers\x18\t \x01(\x05\x12\x45\n\x0fhyperparameters\x18\n \x03(\x0b\x32,.worker.v1.TrainRequest.HyperparametersEntry\x1a\x36\n\x14HyperparametersEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01J\x04\x08\x05\x10\x06\"1\n\rTrainResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"a\n\x0ePredictRequest\x12\x10\n\x08model_id\x18\x01 \x01(\t\x12\x10\n\x08\x66\x65\x61tures\x18\x02 \x03(\x02\x12\x14\n\x0cworker_index\x18\x03 \x01(\x05\x12\x15\n\rtotal_workers\x18\x04 \x01(\x05\"&\n\x0fPredictResponse\x12\x13\n\x0bpredictions\x18\x01 \x03(\t\"\x0f\n\rHealthRequest\"!\n\x0eHealthResponse\x12\x0f\n\x07healthy\x18\x01 \x01(\x08*N\n\x08TaskType\x12\x14\n\x10UNSPECIFIED_TASK\x10\x00\x12\x17\n\x13\x43LASSIFICATION_TASK\x10\x01\x12\x13\n\x0fREGRESSION_TASK\x10\x02\x32\xc5\x01\n\x06Worker\x12:\n\x05Train\x12\x17.worker.v1.TrainRequest\x1a\x18.worker.v1.TrainResponse\x12@\n\x07Predict\x12\x19.worker.v1.PredictRequest\x1a\x1a.worker.v1.PredictResponse\x12=\n\x06Health\x12\x18.worker.v1.HealthRequest\x1a\x19.worker.v1.HealthResponseBLZJgithub.com/bytelisa/distributed-random-forest/api/proto/worker/v1;workerv1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n api/proto/worker/v1/worker.proto\x12\tworker.v1\"\xa7\x02\n\x0cTrainRequest\x12\x10\n\x08model_id\x18\x01 \x01(\t\x12\x13\n\x0b\x64\x61taset_url\x18\x02 \x01(\t\x12&\n\ttask_type\x18\x03 \x01(\x0e\x32\x13.worker.v1.TaskType\x12\x15\n\rtarget_column\x18\x06 \x01(\t\x12\x45\n\x0fhyperparameters\x18\n \x03(\x0b\x32,.worker.v1.TrainRequest.HyperparametersEntry\x12\x14\n\x0ctree_indices\x18\x0b \x03(\x05\x1a\x36\n\x14HyperparametersEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01J\x04\x08\x04\x10\x05J\x04\x08\x05\x10\x06J\x04\x08\x07\x10\x08J\x04\x08\x08\x10\tJ\x04\x08\t\x10\n\"1\n\rTrainResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"V\n\x0ePredictRequest\x12\x10\n\x08model_id\x18\x01 \x01(\t\x12\x10\n\x08\x66\x65\x61tures\x18\x02 \x03(\x02\x12\x14\n\x0ctree_indices\x18\x05 \x03(\x05J\x04\x08\x03\x10\x04J\x04\x08\x04\x10\x05\"G\n\x0eTreePrediction\x12\x0f\n\x07\x63lasses\x18\x01 \x03(\t\x12\x15\n\rprobabilities\x18\x02 \x03(\x01\x12\r\n\x05value\x18\x03 \x01(\x01\"A\n\x0fPredictResponse\x12.\n\x0bpredictions\x18\x01 \x03(\x0b\x32\x19.worker.v1.TreePrediction\"\x0f\n\rHealthRequest\"!\n\x0eHealthResponse\x12\x0f\n\x07healthy\x18\x01 \x01(\x08*N\n\x08TaskType\x12\x14\n\x10UNSPECIFIED_TASK\x10\x00\x12\x17\n\x13\x43LASSIFICATION_TASK\x10\x01\x12\x13\n\x0fREGRESSION_TASK\x10\x02\x32\xc5\x01\n\x06Worker\x12:\n\x05Train\x12\x17.worker.v1.TrainRequest\x1a\x18.worker.v1.TrainResponse\x12@\n\x07Predict\x12\x19.worker.v1.PredictRequest\x1a\x1a.worker.v1.PredictResponse\x12=\n\x06Health\x12\x18.worker.v1.HealthRequest\x1a\x19.worker.v1.HealthResponseBLZJgithub.com/bytelisa/distributed-random-forest/api/proto/worker/v1;workerv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -34,22 +34,24 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['DESCRIPTOR']._serialized_options = b'ZJgithub.com/bytelisa/distributed-random-forest/api/proto/worker/v1;workerv1'
   _globals['_TRAINREQUEST_HYPERPARAMETERSENTRY']._loaded_options = None
   _globals['_TRAINREQUEST_HYPERPARAMETERSENTRY']._serialized_options = b'8\001'
-  _globals['_TASKTYPE']._serialized_start=629
-  _globals['_TASKTYPE']._serialized_end=707
+  _globals['_TASKTYPE']._serialized_start=676
+  _globals['_TASKTYPE']._serialized_end=754
   _globals['_TRAINREQUEST']._serialized_start=48
-  _globals['_TRAINREQUEST']._serialized_end=385
-  _globals['_TRAINREQUEST_HYPERPARAMETERSENTRY']._serialized_start=325
-  _globals['_TRAINREQUEST_HYPERPARAMETERSENTRY']._serialized_end=379
-  _globals['_TRAINRESPONSE']._serialized_start=387
-  _globals['_TRAINRESPONSE']._serialized_end=436
-  _globals['_PREDICTREQUEST']._serialized_start=438
-  _globals['_PREDICTREQUEST']._serialized_end=535
-  _globals['_PREDICTRESPONSE']._serialized_start=537
-  _globals['_PREDICTRESPONSE']._serialized_end=575
-  _globals['_HEALTHREQUEST']._serialized_start=577
-  _globals['_HEALTHREQUEST']._serialized_end=592
-  _globals['_HEALTHRESPONSE']._serialized_start=594
-  _globals['_HEALTHRESPONSE']._serialized_end=627
-  _globals['_WORKER']._serialized_start=710
-  _globals['_WORKER']._serialized_end=907
+  _globals['_TRAINREQUEST']._serialized_end=343
+  _globals['_TRAINREQUEST_HYPERPARAMETERSENTRY']._serialized_start=259
+  _globals['_TRAINREQUEST_HYPERPARAMETERSENTRY']._serialized_end=313
+  _globals['_TRAINRESPONSE']._serialized_start=345
+  _globals['_TRAINRESPONSE']._serialized_end=394
+  _globals['_PREDICTREQUEST']._serialized_start=396
+  _globals['_PREDICTREQUEST']._serialized_end=482
+  _globals['_TREEPREDICTION']._serialized_start=484
+  _globals['_TREEPREDICTION']._serialized_end=555
+  _globals['_PREDICTRESPONSE']._serialized_start=557
+  _globals['_PREDICTRESPONSE']._serialized_end=622
+  _globals['_HEALTHREQUEST']._serialized_start=624
+  _globals['_HEALTHREQUEST']._serialized_end=639
+  _globals['_HEALTHRESPONSE']._serialized_start=641
+  _globals['_HEALTHRESPONSE']._serialized_end=674
+  _globals['_WORKER']._serialized_start=757
+  _globals['_WORKER']._serialized_end=954
 # @@protoc_insertion_point(module_scope)

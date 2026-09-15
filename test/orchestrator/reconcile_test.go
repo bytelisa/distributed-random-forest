@@ -7,7 +7,6 @@ package orchestrator_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 
 	pb "github.com/bytelisa/distributed-random-forest/api/proto/worker/v1"
@@ -23,15 +22,31 @@ import (
 func newReconcileConfig(storageCfg config.StorageConfig) *config.Config {
 	return &config.Config{
 		Storage: storageCfg,
-		System:  config.SystemConfig{TimeoutTraining: 5, TimeoutPrediction: 5, TimeoutHealthCheck: healthTimeoutSeconds},
+		System:  testutil.NewTestSystemConfig(),
 	}
 }
 
+func putMeta(t *testing.T, store *orchestrator.S3Store, modelID string, nEstimators int32) {
+	t.Helper()
+	meta := orchestrator.TrainRequestMetadata{
+		DatasetURL:   "data/iris.csv",
+		TaskType:     int32(pb.TaskType_CLASSIFICATION_TASK),
+		TargetColumn: "target",
+		NEstimators:  nEstimators,
+	}
+	require.NoError(t, store.PutJSON(context.Background(), "models/"+modelID+"/train_request.json", meta))
+}
+
+func putTree(t *testing.T, store *orchestrator.S3Store, modelID string, idx int32) {
+	t.Helper()
+	require.NoError(t, store.PutBytes(context.Background(), testutil.TreeKey(modelID, idx), []byte("tree")))
+}
+
 // ---------------------------------------------------------------------
-// D1 — Recupero mirato delle sole partizioni mancanti (training_incomplete)
+// D1 — Recupero mirato dei soli alberi mancanti
 // ---------------------------------------------------------------------
 
-func TestD1_RecoverMissingModelParts(t *testing.T) {
+func TestD1_RecoverMissingTrees(t *testing.T) {
 	fakeS3 := testutil.NewFakeS3(t)
 	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
 	ctx := context.Background()
@@ -40,60 +55,39 @@ func TestD1_RecoverMissingModelParts(t *testing.T) {
 	require.NoError(t, err)
 
 	modelID := "model-d1"
-	meta := orchestrator.TrainRequestMetadata{
-		DatasetURL:      "data/iris.csv",
-		TaskType:        int32(pb.TaskType_CLASSIFICATION_TASK),
-		TargetColumn:    "target",
-		NEstimators:     10,
-		TotalPartitions: 3,
-	}
-	require.NoError(t, store.PutJSON(ctx, "models/"+modelID+"/train_request.json", meta))
-
-	// Partitioning is complete: all 3 dataset partitions are present.
-	for i := 0; i < 3; i++ {
-		key := fmt.Sprintf("models/%s/dataset_partitions/part_%d.csv", modelID, i)
-		require.NoError(t, store.PutBytes(ctx, key, []byte("data")))
-	}
-	// Only partition 0 was actually trained before the crash.
-	require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/model_parts/forest_part_0.joblib", modelID), []byte("f0")))
+	putMeta(t, store, modelID, 5)
+	// Only trees 0 and 3 made it to S3 before the crash.
+	putTree(t, store, modelID, 0)
+	putTree(t, store, modelID, 3)
 
 	w0 := testutil.NewFakeWorker(t)
-	w0.TrainFunc = testutil.TrainFuncUploadingPart(&storageCfg)
+	w0.TrainFunc = testutil.TrainFuncUploadingTrees(&storageCfg)
 	w1 := testutil.NewFakeWorker(t)
-	w1.TrainFunc = testutil.TrainFuncUploadingPart(&storageCfg)
+	w1.TrainFunc = testutil.TrainFuncUploadingTrees(&storageCfg)
 
 	pool := newPool(t, w0.Address, w1.Address)
 	pool.ReconcileIncompleteTrainings(ctx, newReconcileConfig(storageCfg))
 
-	// Only the 2 missing partitions (1 and 2) were reissued - never 0.
+	// Only the 3 missing trees (1, 2, 4) were reissued - never 0 or 3.
 	allCalls := append(w0.TrainCalls(), w1.TrainCalls()...)
-	require.Len(t, allCalls, 2)
-
-	var indices []int32
+	assert.Equal(t, []int32{1, 2, 4}, requestedTrees(allCalls))
 	for _, c := range allCalls {
-		indices = append(indices, c.WorkerIndex)
-		assert.Equal(t, int32(3), c.TotalWorkers, "total comes from the persisted metadata, not the current worker count")
 		assert.Equal(t, modelID, c.ModelId)
+		assert.Equal(t, "data/iris.csv", c.DatasetUrl, "the training set comes from the persisted metadata")
 	}
-	assert.ElementsMatch(t, []int32{1, 2}, indices)
 
-	// All 3 model parts are now present.
-	keys, err := store.ListKeys(ctx, fmt.Sprintf("models/%s/model_parts/", modelID))
+	// All 5 trees are now present and the model is ready.
+	assert.Len(t, fakeS3.Keys("models/"+modelID+"/model_parts/"), 5)
+	st, err := orchestrator.GetModelStatus(ctx, &storageCfg, modelID)
 	require.NoError(t, err)
-	assert.Len(t, keys, 3)
-
-	// Dataset partitions were left untouched.
-	dsKeys, err := store.ListKeys(ctx, fmt.Sprintf("models/%s/dataset_partitions/", modelID))
-	require.NoError(t, err)
-	assert.Len(t, dsKeys, 3)
+	assert.Equal(t, "ready", st.Status)
 }
 
 // ---------------------------------------------------------------------
-// D2 — Recupero di un training interrotto durante il partizionamento
-// (partitioning_incomplete)
+// D2 — Recupero di un training interrotto prima di qualunque albero
 // ---------------------------------------------------------------------
 
-func TestD2_RecoverIncompletePartitioning(t *testing.T) {
+func TestD2_RecoverTrainingWithNoTreesYet(t *testing.T) {
 	fakeS3 := testutil.NewFakeS3(t)
 	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
 	ctx := context.Background()
@@ -102,57 +96,43 @@ func TestD2_RecoverIncompletePartitioning(t *testing.T) {
 	require.NoError(t, err)
 
 	modelID := "model-d2"
-	// The original attempt targeted 3 partitions (3 workers were healthy
-	// back then), but the master crashed after uploading only 1 of them.
-	meta := orchestrator.TrainRequestMetadata{
-		DatasetURL:      "data/housing.csv",
-		TaskType:        int32(pb.TaskType_REGRESSION_TASK),
-		TargetColumn:    "target",
-		NEstimators:     10,
-		TotalPartitions: 3,
-	}
-	require.NoError(t, store.PutJSON(ctx, "models/"+modelID+"/train_request.json", meta))
-	require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/dataset_partitions/part_0.csv", modelID), []byte("data")))
-	// No model parts at all yet - never got that far.
+	// The master crashed right after persisting the request: no tree at all.
+	// Whatever the number of workers healthy back then, the forest size is
+	// fixed by the request.
+	putMeta(t, store, modelID, 4)
 
-	// Only 2 workers are healthy now, fewer than the stale 3 in metadata.
 	w0 := testutil.NewFakeWorker(t)
-	w0.TrainFunc = testutil.TrainFuncUploadingPart(&storageCfg)
+	w0.TrainFunc = testutil.TrainFuncUploadingTrees(&storageCfg)
 	w1 := testutil.NewFakeWorker(t)
-	w1.TrainFunc = testutil.TrainFuncUploadingPart(&storageCfg)
+	w1.TrainFunc = testutil.TrainFuncUploadingTrees(&storageCfg)
 
 	pool := newPool(t, w0.Address, w1.Address)
 	pool.ReconcileIncompleteTrainings(ctx, newReconcileConfig(storageCfg))
 
-	// Repartitioned from scratch for the 2 CURRENTLY healthy workers, not
-	// resumed from the stale 3.
-	dsKeys, err := store.ListKeys(ctx, fmt.Sprintf("models/%s/dataset_partitions/", modelID))
-	require.NoError(t, err)
-	assert.Len(t, dsKeys, 2)
-
-	var newMeta orchestrator.TrainRequestMetadata
-	found, err := store.GetJSON(ctx, "models/"+modelID+"/train_request.json", &newMeta)
-	require.NoError(t, err)
-	require.True(t, found)
-	assert.EqualValues(t, 2, newMeta.TotalPartitions, "metadata overwritten with the recomputed count, not the stale one")
-
-	// Same model_id reused (not a new UUID) - both healthy workers trained
-	// a full partition for it.
+	// Same model_id reused (not a new UUID), all 4 trees split over the 2
+	// workers healthy now.
 	require.Len(t, w0.TrainCalls(), 1)
 	require.Len(t, w1.TrainCalls(), 1)
 	assert.Equal(t, modelID, w0.TrainCalls()[0].ModelId)
-	assert.Equal(t, int32(2), w0.TrainCalls()[0].TotalWorkers)
+	assert.Len(t, w0.TrainCalls()[0].TreeIndices, 2)
+	assert.Len(t, w1.TrainCalls()[0].TreeIndices, 2)
+	assert.Equal(t, indices(4), requestedTrees(append(w0.TrainCalls(), w1.TrainCalls()...)))
 
-	modelKeys, err := store.ListKeys(ctx, fmt.Sprintf("models/%s/model_parts/", modelID))
+	var meta orchestrator.TrainRequestMetadata
+	found, err := store.GetJSON(ctx, "models/"+modelID+"/train_request.json", &meta)
 	require.NoError(t, err)
-	assert.Len(t, modelKeys, 2)
+	require.True(t, found)
+	assert.EqualValues(t, 4, meta.NEstimators, "the persisted request is never rewritten by recovery")
+
+	assert.Len(t, fakeS3.Keys("models/"+modelID+"/model_parts/"), 4)
 }
 
 // ---------------------------------------------------------------------
-// D3 — Più parti mancanti, distribuite su più worker sani
+// D3 — Più alberi mancanti, distribuiti su più worker sani; un modello
+// marcato failed viene ritentato e il marker rimosso
 // ---------------------------------------------------------------------
 
-func TestD3_MultipleMissingPartsSpreadAcrossWorkers(t *testing.T) {
+func TestD3_MultipleMissingTreesSpreadAcrossWorkers(t *testing.T) {
 	fakeS3 := testutil.NewFakeS3(t)
 	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
 	ctx := context.Background()
@@ -161,38 +141,35 @@ func TestD3_MultipleMissingPartsSpreadAcrossWorkers(t *testing.T) {
 	require.NoError(t, err)
 
 	modelID := "model-d3"
-	meta := orchestrator.TrainRequestMetadata{TaskType: int32(pb.TaskType_CLASSIFICATION_TASK), TargetColumn: "t", NEstimators: 5, TotalPartitions: 4}
-	require.NoError(t, store.PutJSON(ctx, "models/"+modelID+"/train_request.json", meta))
-	for i := 0; i < 4; i++ {
-		require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/dataset_partitions/part_%d.csv", modelID, i), []byte("d")))
-	}
-	// Parts 0 and 1 present, 2 and 3 missing.
-	require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/model_parts/forest_part_0.joblib", modelID), []byte("f0")))
-	require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/model_parts/forest_part_1.joblib", modelID), []byte("f1")))
+	putMeta(t, store, modelID, 6)
+	// Trees 0 and 1 present, 2..5 missing, and a previous attempt gave up.
+	putTree(t, store, modelID, 0)
+	putTree(t, store, modelID, 1)
+	require.NoError(t, store.PutJSON(ctx, "models/"+modelID+"/training_failed.json",
+		orchestrator.TrainingFailedMarker{Message: "gave up earlier"}))
 
 	w0 := testutil.NewFakeWorker(t)
-	w0.TrainFunc = testutil.TrainFuncUploadingPart(&storageCfg)
+	w0.TrainFunc = testutil.TrainFuncUploadingTrees(&storageCfg)
 	w1 := testutil.NewFakeWorker(t)
-	w1.TrainFunc = testutil.TrainFuncUploadingPart(&storageCfg)
+	w1.TrainFunc = testutil.TrainFuncUploadingTrees(&storageCfg)
 
 	pool := newPool(t, w0.Address, w1.Address)
 	pool.ReconcileIncompleteTrainings(ctx, newReconcileConfig(storageCfg))
 
-	// The 2 missing indices (idx % len(activeWorkers)) land on 2 DIFFERENT
-	// workers, never both on the same one.
+	// The 4 missing trees are spread over the 2 workers, 2 each.
 	require.Len(t, w0.TrainCalls(), 1)
 	require.Len(t, w1.TrainCalls(), 1)
+	assert.Len(t, w0.TrainCalls()[0].TreeIndices, 2)
+	assert.Len(t, w1.TrainCalls()[0].TreeIndices, 2)
+	assert.Equal(t, []int32{2, 3, 4, 5}, requestedTrees(append(w0.TrainCalls(), w1.TrainCalls()...)))
 
-	var indices []int32
-	for _, c := range append(w0.TrainCalls(), w1.TrainCalls()...) {
-		indices = append(indices, c.WorkerIndex)
-		assert.Equal(t, int32(4), c.TotalWorkers)
-	}
-	assert.ElementsMatch(t, []int32{2, 3}, indices)
+	assert.Len(t, fakeS3.Keys("models/"+modelID+"/model_parts/"), 6)
 
-	keys, err := store.ListKeys(ctx, fmt.Sprintf("models/%s/model_parts/", modelID))
+	// The forest is complete: the stale failure marker is gone.
+	assert.False(t, fakeS3.Has("models/"+modelID+"/training_failed.json"))
+	st, err := orchestrator.GetModelStatus(ctx, &storageCfg, modelID)
 	require.NoError(t, err)
-	assert.Len(t, keys, 4)
+	assert.Equal(t, "ready", st.Status)
 }
 
 // ---------------------------------------------------------------------
@@ -208,19 +185,13 @@ func TestD4_WorkerFailsDuringRecovery(t *testing.T) {
 	require.NoError(t, err)
 
 	modelA := "model-d4a"
-	metaA := orchestrator.TrainRequestMetadata{TaskType: int32(pb.TaskType_CLASSIFICATION_TASK), TargetColumn: "t", NEstimators: 5, TotalPartitions: 3}
-	require.NoError(t, store.PutJSON(ctx, "models/"+modelA+"/train_request.json", metaA))
-	for i := 0; i < 3; i++ {
-		require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/dataset_partitions/part_%d.csv", modelA, i), []byte("d")))
-	}
-	require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/model_parts/forest_part_0.joblib", modelA), []byte("f0")))
-	// Indices 1 and 2 missing for model A.
+	putMeta(t, store, modelA, 3)
+	putTree(t, store, modelA, 0)
+	// Trees 1 and 2 missing for model A.
 
 	modelB := "model-d4b"
-	metaB := orchestrator.TrainRequestMetadata{TaskType: int32(pb.TaskType_CLASSIFICATION_TASK), TargetColumn: "t", NEstimators: 5, TotalPartitions: 1}
-	require.NoError(t, store.PutJSON(ctx, "models/"+modelB+"/train_request.json", metaB))
-	require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/dataset_partitions/part_0.csv", modelB), []byte("d")))
-	// Index 0 missing for model B.
+	putMeta(t, store, modelB, 1)
+	// Tree 0 missing for model B.
 
 	crashing := testutil.NewFakeWorker(t)
 	crashing.TrainFunc = func(_ context.Context, _ *pb.TrainRequest) (*pb.TrainResponse, error) {
@@ -242,13 +213,20 @@ func TestD4_WorkerFailsDuringRecovery(t *testing.T) {
 			modelBCalls++
 		}
 	}
-	assert.Equal(t, 2, modelACalls, "both missing partitions of model A are attempted even though each fails")
-	assert.Equal(t, 1, modelBCalls, "reconciliation moves on to model B despite model A's failures")
+	// Each model exhausts its own retry budget (1 attempt + MaxRetriesPerTree)
+	// and reconciliation moves on to the next one regardless.
+	assert.Equal(t, 1+pool.MaxRetriesPerTree, modelACalls)
+	assert.Equal(t, 1+pool.MaxRetriesPerTree, modelBCalls, "reconciliation moves on to model B despite model A's failures")
 
-	// Nothing actually got recovered - the worker always fails.
-	keysA, err := store.ListKeys(ctx, fmt.Sprintf("models/%s/model_parts/", modelA))
-	require.NoError(t, err)
-	assert.Len(t, keysA, 1, "still just the original part 0 - the failed retries uploaded nothing")
+	// Nothing actually got recovered - the worker always fails - and both
+	// models are reported as failed, with the reason.
+	assert.Len(t, fakeS3.Keys("models/"+modelA+"/model_parts/"), 1, "still just the original tree 0")
+	for _, id := range []string{modelA, modelB} {
+		st, err := orchestrator.GetModelStatus(ctx, &storageCfg, id)
+		require.NoError(t, err)
+		assert.Equal(t, "failed", st.Status)
+		assert.Contains(t, st.Message, "worker crashed during recovery")
+	}
 }
 
 // ---------------------------------------------------------------------
@@ -266,49 +244,51 @@ func TestD5_GetModelStatusAcrossRecoveryPhases(t *testing.T) {
 	t.Run("unknown model_id -> not_found", func(t *testing.T) {
 		got, err := orchestrator.GetModelStatus(ctx, &storageCfg, "no-such-model")
 		require.NoError(t, err)
-		assert.Equal(t, "not_found", got)
+		assert.Equal(t, "not_found", got.Status)
 	})
 
 	t.Run("keys exist but train_request.json not written yet -> training (won't resolve on its own)", func(t *testing.T) {
 		modelID := "model-d5-narrow-window"
-		require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/dataset_partitions/part_0.csv", modelID), []byte("d")))
+		putTree(t, store, modelID, 0)
 
 		got, err := orchestrator.GetModelStatus(ctx, &storageCfg, modelID)
 		require.NoError(t, err)
-		assert.Equal(t, "training", got)
+		assert.Equal(t, "training", got.Status)
 	})
 
-	t.Run("train_request.json present but dataset_partitions incomplete -> training", func(t *testing.T) {
-		modelID := "model-d5-partitioning"
-		meta := orchestrator.TrainRequestMetadata{TotalPartitions: 3}
-		require.NoError(t, store.PutJSON(ctx, "models/"+modelID+"/train_request.json", meta))
-		require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/dataset_partitions/part_0.csv", modelID), []byte("d")))
+	t.Run("some trees missing -> training", func(t *testing.T) {
+		modelID := "model-d5-missing-trees"
+		putMeta(t, store, modelID, 2)
+		putTree(t, store, modelID, 0)
 
 		got, err := orchestrator.GetModelStatus(ctx, &storageCfg, modelID)
 		require.NoError(t, err)
-		assert.Equal(t, "training", got)
+		assert.Equal(t, "training", got.Status)
 	})
 
-	t.Run("partitioning complete but some model parts missing -> training", func(t *testing.T) {
-		modelID := "model-d5-missing-parts"
-		meta := orchestrator.TrainRequestMetadata{TotalPartitions: 2}
-		require.NoError(t, store.PutJSON(ctx, "models/"+modelID+"/train_request.json", meta))
-		require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/model_parts/forest_part_0.joblib", modelID), []byte("f")))
+	t.Run("some trees missing and a failure marker -> failed, with the message", func(t *testing.T) {
+		modelID := "model-d5-failed"
+		putMeta(t, store, modelID, 2)
+		putTree(t, store, modelID, 0)
+		require.NoError(t, store.PutJSON(ctx, "models/"+modelID+"/training_failed.json",
+			orchestrator.TrainingFailedMarker{Message: "tree 1 failed 4 times"}))
 
 		got, err := orchestrator.GetModelStatus(ctx, &storageCfg, modelID)
 		require.NoError(t, err)
-		assert.Equal(t, "training", got)
+		assert.Equal(t, "failed", got.Status)
+		assert.Equal(t, "tree 1 failed 4 times", got.Message)
 	})
 
-	t.Run("every model part present -> ready", func(t *testing.T) {
+	t.Run("every tree present -> ready, even with a stale failure marker", func(t *testing.T) {
 		modelID := "model-d5-ready"
-		meta := orchestrator.TrainRequestMetadata{TotalPartitions: 2}
-		require.NoError(t, store.PutJSON(ctx, "models/"+modelID+"/train_request.json", meta))
-		require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/model_parts/forest_part_0.joblib", modelID), []byte("f0")))
-		require.NoError(t, store.PutBytes(ctx, fmt.Sprintf("models/%s/model_parts/forest_part_1.joblib", modelID), []byte("f1")))
+		putMeta(t, store, modelID, 2)
+		putTree(t, store, modelID, 0)
+		putTree(t, store, modelID, 1)
+		require.NoError(t, store.PutJSON(ctx, "models/"+modelID+"/training_failed.json",
+			orchestrator.TrainingFailedMarker{Message: "stale"}))
 
 		got, err := orchestrator.GetModelStatus(ctx, &storageCfg, modelID)
 		require.NoError(t, err)
-		assert.Equal(t, "ready", got)
+		assert.Equal(t, "ready", got.Status)
 	})
 }

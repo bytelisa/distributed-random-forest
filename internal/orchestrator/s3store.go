@@ -172,24 +172,53 @@ func (s *S3Store) PutBytes(ctx context.Context, key string, body []byte) error {
 	return err
 }
 
-// TrainRequestMetadata is the schema of models/{model_id}/train_request.json:
+// DeleteKey removes an object. Deleting a missing key is not an error.
+func (s *S3Store) DeleteKey(ctx context.Context, key string) error {
+	_, err := s.client.DeleteObject(ctx, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+	})
+	return err
+}
+
+// TrainRequestMetadata is the schema of models/{model_id}/train_request.json.
+// NEstimators is the total size of the forest: tree indices go from 0 to
+// NEstimators-1, whatever the number of workers.
 type TrainRequestMetadata struct {
 	DatasetURL      string            `json:"dataset_url"`
 	TaskType        int32             `json:"task_type"`
 	TargetColumn    string            `json:"target_column"`
 	NEstimators     int32             `json:"n_estimators"`
-	TotalPartitions int32             `json:"total_partitions"`
 	Hyperparameters map[string]string `json:"hyperparameters,omitempty"`
 }
 
-// partIndexRE matches the deterministic model part filenames written by
-// the worker: forest_part_{index}.joblib.
-var partIndexRE = regexp.MustCompile(`forest_part_(\d+)\.joblib$`)
+// TrainingFailedMarker is the schema of models/{model_id}/training_failed.json,
+// written when the retry budget of a training is exhausted and removed
+// when a later attempt (reconciliation) completes the forest.
+type TrainingFailedMarker struct {
+	Message string `json:"message"`
+}
 
-// parsePartitionIndex extracts the partition index from a model part S3
-// key, if it matches the expected naming scheme.
-func parsePartitionIndex(key string) (int32, bool) {
-	match := partIndexRE.FindStringSubmatch(key)
+func trainRequestKey(modelID string) string {
+	return "models/" + modelID + "/train_request.json"
+}
+
+func trainingFailedKey(modelID string) string {
+	return "models/" + modelID + "/training_failed.json"
+}
+
+func modelPartsPrefix(modelID string) string {
+	return "models/" + modelID + "/model_parts/"
+}
+
+// treeIndexRE matches the deterministic tree filenames written by the
+// worker: tree_{index}.joblib.
+var treeIndexRE = regexp.MustCompile(`tree_(\d+)\.joblib$`)
+
+// parseTreeIndex extracts the tree index from a model part S3 key, if it
+// matches the expected naming scheme.
+func parseTreeIndex(key string) (int32, bool) {
+	match := treeIndexRE.FindStringSubmatch(key)
 	if match == nil {
 		return 0, false
 	}
@@ -198,4 +227,19 @@ func parsePartitionIndex(key string) (int32, bool) {
 		return 0, false
 	}
 	return int32(idx), true
+}
+
+// listTreeIndices returns the set of tree indices already uploaded for a model.
+func (s *S3Store) listTreeIndices(ctx context.Context, modelID string) (map[int32]bool, error) {
+	keys, err := s.ListKeys(ctx, modelPartsPrefix(modelID))
+	if err != nil {
+		return nil, err
+	}
+	present := make(map[int32]bool, len(keys))
+	for _, key := range keys {
+		if idx, ok := parseTreeIndex(key); ok {
+			present[idx] = true
+		}
+	}
+	return present, nil
 }

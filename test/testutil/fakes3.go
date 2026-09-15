@@ -13,7 +13,7 @@ import (
 )
 
 // FakeS3 is a minimal in-memory S3-compatible HTTP server: just enough of
-// PutObject/GetObject/ListObjectsV2 (path-style addressing, as
+// PutObject/GetObject/DeleteObject/ListObjectsV2 (path-style addressing, as
 // internal/orchestrator.S3Store configures) to exercise the master's
 // storage code without a real MinIO/S3 endpoint or network access.
 type FakeS3 struct {
@@ -88,6 +88,16 @@ func (f *FakeS3) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.handleGet(w, parts[1])
+
+	case http.MethodDelete:
+		if len(parts) < 2 || parts[1] == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		f.mu.Lock()
+		delete(f.objects, parts[1])
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
