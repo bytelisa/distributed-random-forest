@@ -28,5 +28,3 @@ minio_data/
 *.csv
 *.joblib
 
-# --- Config ---
-config.*
