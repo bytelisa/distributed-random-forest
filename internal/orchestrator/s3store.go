@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
 	"regexp"
 	"strconv"
 
@@ -26,12 +27,21 @@ import (
 //  - scanning for incomplete trainings (reconcile.go)
 //  - answering a status query (status.go)
 
-
-
 // S3Store wraps an S3 client scoped to a single bucket.
 type S3Store struct {
 	client *s3.Client
 	bucket string
+}
+
+// resolveRegion picks the AWS region used to sign requests.
+func resolveRegion() string {
+	if region := os.Getenv("AWS_REGION"); region != "" {
+		return region
+	}
+	if region := os.Getenv("AWS_DEFAULT_REGION"); region != "" {
+		return region
+	}
+	return "us-east-1"
 }
 
 // NewS3Store builds an S3 client from the given storage config.
@@ -42,6 +52,8 @@ func NewS3Store(ctx context.Context, storageCfg *config.StorageConfig) (*S3Store
 			credentials.NewStaticCredentialsProvider(storageCfg.AccessKey, storageCfg.SecretKey, ""),
 		))
 	}
+
+	optFns = append(optFns, awsconfig.WithRegion(resolveRegion()))
 
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, optFns...)
 	if err != nil {
@@ -102,6 +114,19 @@ func (s *S3Store) ListCommonPrefixes(ctx context.Context, prefix string) ([]stri
 // GetJSON reads and unmarshals a JSON object into the variable out.
 // Returns found=false (no error) if the key doesn't exist.
 func (s *S3Store) GetJSON(ctx context.Context, key string, out interface{}) (found bool, err error) {
+	body, found, err := s.GetBytes(ctx, key)
+	if err != nil || !found {
+		return found, err
+	}
+	if err := json.Unmarshal(body, out); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// GetBytes reads the raw bytes of an object. Returns found=false (no error)
+// if the key doesn't exist.
+func (s *S3Store) GetBytes(ctx context.Context, key string) (body []byte, found bool, err error) {
 	resp, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
@@ -109,26 +134,23 @@ func (s *S3Store) GetJSON(ctx context.Context, key string, out interface{}) (fou
 	if err != nil {
 		var noSuchKey *types.NoSuchKey
 		if errors.As(err, &noSuchKey) {
-			return false, nil
+			return nil, false, nil
 		}
 		// Some S3-compatible backends (MinIO) surface a generic API error
 		// instead of the typed NoSuchKey.
 		var apiErr smithy.APIError
 		if errors.As(err, &apiErr) && (apiErr.ErrorCode() == "NoSuchKey" || apiErr.ErrorCode() == "NotFound") {
-			return false, nil
+			return nil, false, nil
 		}
-		return false, err
+		return nil, false, err
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err = io.ReadAll(resp.Body)
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return false, err
-	}
-	return true, nil
+	return body, true, nil
 }
 
 // PutJSON marshals data to JSON and uploads it to variable key.
@@ -137,7 +159,12 @@ func (s *S3Store) PutJSON(ctx context.Context, key string, data interface{}) err
 	if err != nil {
 		return err
 	}
-	_, err = s.client.PutObject(ctx, &s3.PutObjectInput{
+	return s.PutBytes(ctx, key, body)
+}
+
+// PutBytes uploads raw bytes to the given key.
+func (s *S3Store) PutBytes(ctx context.Context, key string, body []byte) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),
 		Body:   bytes.NewReader(body),
@@ -147,11 +174,12 @@ func (s *S3Store) PutJSON(ctx context.Context, key string, data interface{}) err
 
 // TrainRequestMetadata is the schema of models/{model_id}/train_request.json:
 type TrainRequestMetadata struct {
-	DatasetURL      string `json:"dataset_url"`
-	TaskType        int32  `json:"task_type"`
-	TargetColumn    string `json:"target_column"`
-	NEstimators     int32  `json:"n_estimators"`
-	TotalPartitions int32  `json:"total_partitions"`
+	DatasetURL      string            `json:"dataset_url"`
+	TaskType        int32             `json:"task_type"`
+	TargetColumn    string            `json:"target_column"`
+	NEstimators     int32             `json:"n_estimators"`
+	TotalPartitions int32             `json:"total_partitions"`
+	Hyperparameters map[string]string `json:"hyperparameters,omitempty"`
 }
 
 // partIndexRE matches the deterministic model part filenames written by
