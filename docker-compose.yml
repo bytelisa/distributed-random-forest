@@ -25,6 +25,9 @@ services:
     container_name: drf-master
     ports:
       - "8080:8080"
+    environment:
+      # Required by the Go AWS SDK for S3 requests. MinIO ignores it.
+      AWS_DEFAULT_REGION: "us-east-1"
     depends_on:
       - minio
       - worker-1

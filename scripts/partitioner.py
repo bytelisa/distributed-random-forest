@@ -8,7 +8,7 @@ import pandas as pd
 # Master's module responsible for dataset partitioning.
 # Partitions a dataset and uploads the parts to a specific S3 folder.
 # Fails silently with exit code 0 on success, or >0 on error.
-#
+
 # Note: the training parameters (task_type/target_column/n_estimators) are
 # no longer written here. They're persisted to S3 by
 # scripts/write_train_metadata.py, called by the Go master *before* this
