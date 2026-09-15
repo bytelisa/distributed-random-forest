@@ -5,7 +5,6 @@
 // fake in-memory S3 (testutil.FakeS3). No Python interpreter or real
 // MinIO/S3 is needed to run these.
 //
-// See test_suite_design.md, sezione A (A3) e sezione C (C1-C9).
 package orchestrator_test
 
 import (
@@ -66,7 +65,7 @@ func TestA3_NewWorkerPool(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// C1 — Worker irraggiungibile all'health check, prima del train
+// C1 — Worker unavailable to health check, before training
 // ---------------------------------------------------------------------
 
 func TestC1_UnreachableWorkerExcludedFromTrain(t *testing.T) {
@@ -95,38 +94,75 @@ func TestC1_UnreachableWorkerExcludedFromTrain(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// C2 — Worker muore durante il training (dopo l'health check)
+// C2 — Worker crashes during training (after health check)
 // ---------------------------------------------------------------------
 
 func TestC2_WorkerDiesDuringTrain(t *testing.T) {
-	crashing := testutil.NewFakeWorker(t)
-	crashing.TrainFunc = func(_ context.Context, _ *pb.TrainRequest) (*pb.TrainResponse, error) {
-		return nil, status.Error(codes.Unavailable, "worker process crashed")
-	}
+	t.Run("no healthy peer available: the whole call fails, but state is persisted for later reconciliation", func(t *testing.T) {
+		crashing := testutil.NewFakeWorker(t)
+		crashing.TrainFunc = func(_ context.Context, _ *pb.TrainRequest) (*pb.TrainResponse, error) {
+			return nil, status.Error(codes.Unavailable, "worker process crashed")
+		}
 
-	pool := newPool(t, crashing.Address)
+		pool := newPool(t, crashing.Address)
 
-	fakeS3 := testutil.NewFakeS3(t)
-	storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
+		fakeS3 := testutil.NewFakeS3(t)
+		storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
 
-	req := newTrainRequest("model-c2")
-	resp, err := pool.TrainDistributed(context.Background(), req, &storageCfg)
+		req := newTrainRequest("model-c2")
+		resp, err := pool.TrainDistributed(context.Background(), req, &storageCfg)
 
-	// The call itself doesn't error out (TrainDistributed reports failure
-	// via resp.Success, not via err) - no retry/reassignment happens in
-	// this same call, matching the documented behavior (report.md §4).
-	require.NoError(t, err)
-	assert.False(t, resp.Success)
-	assert.Contains(t, resp.Message, "failed")
+		// The call itself doesn't error out (TrainDistributed reports failure
+		// via resp.Success, not via err). With only one worker configured,
+		// there's no healthy peer to reassign the failed partition to (see
+		// the subtest below for the case where there is one).
+		require.NoError(t, err)
+		assert.False(t, resp.Success)
+		assert.Contains(t, resp.Message, "failed")
 
-	// The metadata is persisted *before* dispatching training, so the model
-	// stays visible to a future reconciliation pass as training_incomplete,
-	// even though this synchronous call reported failure.
-	assert.True(t, fakeS3.Has("models/model-c2/train_request.json"))
+		// The metadata is persisted before dispatching training, so the model
+		// stays visible to a future reconciliation pass as training_incomplete,
+		// even though this synchronous call reported failure.
+		assert.True(t, fakeS3.Has("models/model-c2/train_request.json"))
+	})
+
+	t.Run("a healthy peer is available: the failed partition is retried and reassigned within the same call", func(t *testing.T) {
+		ok := testutil.NewFakeWorker(t)
+		crashing := testutil.NewFakeWorker(t)
+		crashing.TrainFunc = func(_ context.Context, _ *pb.TrainRequest) (*pb.TrainResponse, error) {
+			return nil, status.Error(codes.Unavailable, "worker process crashed")
+		}
+
+		pool := newPool(t, ok.Address, crashing.Address)
+
+		fakeS3 := testutil.NewFakeS3(t)
+		storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
+
+		req := newTrainRequest("model-c2b")
+		resp, err := pool.TrainDistributed(context.Background(), req, &storageCfg)
+		require.NoError(t, err)
+
+		// With a healthy peer available, the failed partition is retried on it
+		// within the same call - no need to wait for a master restart.
+		require.True(t, resp.Success, resp.Message)
+
+		// The crashing worker was asked once, for its own partition, and failed.
+		crashingCalls := crashing.TrainCalls()
+		require.Len(t, crashingCalls, 1)
+
+		// The healthy worker was asked twice: once for its own partition, once
+		// (the retry) for the crashing worker's partition - same WorkerIndex as
+		// the failed attempt, since partitions are addressed by index, not by
+		// which physical worker handles them.
+		okCalls := ok.TrainCalls()
+		require.Len(t, okCalls, 2)
+		gotIndices := []int32{okCalls[0].WorkerIndex, okCalls[1].WorkerIndex}
+		assert.ElementsMatch(t, []int32{0, 1}, gotIndices, "the healthy worker should cover both partition indices between its own call and the retry")
+	})
 }
 
 // ---------------------------------------------------------------------
-// C3 — Predict con tutti i worker sani (happy path)
+// C3 — Predict with all healthy workers (happy path)
 // ---------------------------------------------------------------------
 
 func TestC3_PredictAllWorkersHealthy(t *testing.T) {
@@ -158,7 +194,7 @@ func TestC3_PredictAllWorkersHealthy(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// C4 — Worker muore durante il predict
+// C4 — Worker crashes during predict
 // ---------------------------------------------------------------------
 
 func TestC4_WorkerDiesDuringPredict(t *testing.T) {
@@ -200,42 +236,36 @@ func TestC4_WorkerDiesDuringPredict(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// C5 — Predict su model_id inesistente (hits the worker_service.py
-// PredictResponse(prediction=...) field-name bug: the proto only defines
-// `predictions`, so the real worker raises an unhandled protobuf error in
-// exactly this situation - see worker_service.py:140-142 and
-// worker.proto:66-69). Simulated here as the gRPC error a real worker
-// would actually surface.
+// C5 — Predict on non existent model_id
 // ---------------------------------------------------------------------
 
 func TestC5_PredictOnNonexistentModel(t *testing.T) {
-	buggyWorker := testutil.NewFakeWorker(t)
-	buggyWorker.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
-		// What worker_service.py actually does today when it finds no
-		// model parts: it tries to build PredictResponse(prediction=""),
-		// which isn't a field on the message (only `predictions` is) - the
-		// resulting protobuf ValueError is caught by the generic except
-		// block and surfaced as an INTERNAL grpc error.
-		return nil, status.Error(codes.Internal, `Protocol message PredictResponse has no "prediction" field.`)
+	emptyWorker := testutil.NewFakeWorker(t)
+	emptyWorker.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
+		// What worker_service.py does when it finds no model parts for the
+		// given model_id: returns PredictResponse{} (predictions left as
+		// its zero value, an empty list) - a valid, successful response
+		// meaning "this worker contributes nothing", not an error.
+		return &pb.PredictResponse{}, nil
 	}
 
-	pool := newPool(t, buggyWorker.Address)
+	pool := newPool(t, emptyWorker.Address)
 
 	req := &pb.PredictRequest{ModelId: "does-not-exist", Features: []float32{1, 2}}
 	_, err := pool.PredictDistributed(context.Background(), req, "classification")
 
-	// The master doesn't crash: the worker's failure is just treated like
-	// any other failed worker (log + skip), and since it was the only one,
-	// the aggregation step reports the generic "no results" error - not
-	// the underlying protobuf error, which never reaches the client anyway.
+	// The worker's response is successful but empty, so it contributes
+	// nothing to the aggregation - since it was the only worker, the
+	// aggregation step reports the generic "no results" error.
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no workers returned valid results")
 }
 
 // ---------------------------------------------------------------------
-// C6 — Predict con più worker attivi che alberi salvati: at least one
-// worker ends up with zero files assigned by round-robin, hitting the same
-// bug as C5 for that worker specifically, while the others still succeed.
+// C6 — Predict with num_worker > trees: at least one
+// worker ends up with zero files assigned by round-robin (more workers
+// than trees), and correctly contributes nothing, while the others still
+// succeed.
 // ---------------------------------------------------------------------
 
 func TestC6_MoreWorkersThanTrees(t *testing.T) {
@@ -248,10 +278,10 @@ func TestC6_MoreWorkersThanTrees(t *testing.T) {
 		return &pb.PredictResponse{Predictions: []string{"cat"}}, nil
 	}
 	// Worker 2 got no files assigned by its own round-robin (more workers
-	// than trees) and hits the same PredictResponse(prediction=...) bug.
+	// than trees) - a valid, empty response, not an error.
 	w2 := testutil.NewFakeWorker(t)
 	w2.PredictFunc = func(_ context.Context, _ *pb.PredictRequest) (*pb.PredictResponse, error) {
-		return nil, status.Error(codes.Internal, `Protocol message PredictResponse has no "prediction" field.`)
+		return &pb.PredictResponse{}, nil
 	}
 
 	pool := newPool(t, w0.Address, w1.Address, w2.Address)
@@ -263,7 +293,7 @@ func TestC6_MoreWorkersThanTrees(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// C7 — Worker "creduto morto" completa in ritardo e ricarica la sua parte:
+// C7 — Fake crashed worker was actually just slow:
 // the deterministic filename (forest_part_{worker_index}.joblib, not a
 // random UUID) means a late re-upload overwrites the same S3 key instead
 // of creating a duplicate part for the same partition.
@@ -297,7 +327,7 @@ func TestC7_LateReuploadOverwritesSameKey(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// C8 — Nessun worker sano disponibile
+// C8 — No healthy worker available
 // ---------------------------------------------------------------------
 
 func TestC8_NoHealthyWorkers(t *testing.T) {
@@ -323,7 +353,7 @@ func TestC8_NoHealthyWorkers(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------
-// C9 — Numero di worker diverso tra train e predict
+// C9 — Different number of workers in train vs predict
 // ---------------------------------------------------------------------
 
 func TestC9_WorkerCountChangesBetweenTrainAndPredict(t *testing.T) {

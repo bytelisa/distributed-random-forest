@@ -108,6 +108,17 @@ func (p *WorkerPool) getHealthyWorkers(ctx context.Context) ([]*WorkerClient, er
 	return healthyWorkers, nil
 }
 
+// pickReplacementWorker returns any healthy worker in candidates other than failed one,
+// or nil if none is available
+func pickReplacementWorker(candidates []*WorkerClient, failed *WorkerClient) *WorkerClient {
+	for _, w := range candidates {
+		if w.Address != failed.Address {
+			return w
+		}
+	}
+	return nil
+}
+
 // TrainDistributed splits the work among available (healthy) workers only and waits for completion
 func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest, storageCfg *config.StorageConfig) (*pb.TrainResponse, error) {
 
@@ -180,9 +191,28 @@ func (p *WorkerPool) TrainDistributed(ctx context.Context, req *pb.TrainRequest,
 			}
 
 			resp, err := w.Client.Train(ctx, workerReq)
-			if err != nil || !resp.Success {
-				errChan <- fmt.Errorf("worker %d failed: %v", idx, err)
+			if err == nil && resp.Success {
+				return
 			}
+
+			log.Printf("[Orchestrator] Worker %d (partition %d) failed: %v - looking for a healthy peer to reassign to, within this same call.", idx, idx, err)
+
+			// Immediate in-call retry: partitions are addressed by index,
+			// not by which physical worker handles them (stateless design),
+			// so any other currently healthy worker can pick this one up
+			replacement := pickReplacementWorker(activeWorkers, w)
+			if replacement == nil {
+				errChan <- fmt.Errorf("partition %d failed on worker %s and no other healthy worker is available to retry: %v", idx, w.Address, err)
+				return
+			}
+
+			resp, err = replacement.Client.Train(ctx, workerReq)
+			if err != nil || !resp.Success {
+				errChan <- fmt.Errorf("partition %d failed on worker %s, retry on worker %s also failed: %v", idx, w.Address, replacement.Address, err)
+				return
+			}
+
+			log.Printf("[Orchestrator] Partition %d recovered on worker %s after worker %s failed.", idx, replacement.Address, w.Address)
 		}(worker, i)
 	}
 
