@@ -96,7 +96,7 @@ http://localhost:9001
 (login `minioadmin` / `minioadmin`)
 
 ## 7. Send an example training request
-`dataset_url` is a **bare object key** inside the bucket (not a full `s3://...` URL) — make sure the file has already been uploaded to MinIO first.
+`dataset_url` is an object key inside the bucket (not a full `s3://...` URL). Make sure the file has already been uploaded to MinIO first.
 
 Example for a classification task:
 ```bash
@@ -106,7 +106,7 @@ Example for a regression task:
 ```bash
 curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"housing.csv\", \"task_type\": \"regression\", \"target_column\": \"median_house_value\", \"n_estimators\": 10}'
 ```
-The response is immediate (`202 Accepted`) and only contains the `model_id` — training keeps running in the background:
+Asynchronous: the response is immediate (`202 Accepted`) and only contains the `model_id`, while training keeps running in the background:
 ```json
 {"model_id": "...", "status": "training", "message": "Training started."}
 ```
@@ -115,7 +115,7 @@ The response is immediate (`202 Accepted`) and only contains the `model_id` — 
 ```bash
 curl.exe http://localhost:8080/models/<MODEL_ID>
 ```
-Wait until the status is `"ready"` before running inference.
+When status is `"ready"`, the model can be used for inference.
 
 ## 9. Send an example predict request
 Example for a classification task:
