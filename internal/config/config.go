@@ -14,7 +14,6 @@ type Config struct {
 	Server  ServerConfig  `mapstructure:"server"`
 	Workers WorkerConfig  `mapstructure:"workers"`
 	Storage StorageConfig `mapstructure:"storage"`
-	Tasks   []TaskConfig  `mapstructure:"tasks"`
 	System  SystemConfig  `mapstructure:"system"`
 }
 
@@ -40,15 +39,6 @@ type StorageConfig struct {
 	BasePath string `mapstructure:"base_path"`
 	// LocalTempDir is mainly used by workers, but good to map it anyway
 	LocalTempDir string `mapstructure:"local_temp_dir"`
-}
-
-type TaskConfig struct {
-	Name            string         `mapstructure:"name"`
-	Type            string         `mapstructure:"type"`
-	DatasetPath     string         `mapstructure:"dataset_path"`
-	TargetColumn    string         `mapstructure:"target_column"`
-	Hyperparameters map[string]int `mapstructure:"hyperparameters"` // Semplificato a int per ora
-	TestFeatures    []float32      `mapstructure:"test_features"`
 }
 
 type SystemConfig struct {
