@@ -1,5 +1,4 @@
 # model.py
-import math
 import os
 from typing import Union
 import pandas as pd
@@ -76,24 +75,24 @@ def prepare_features(data: pd.DataFrame, target_column: str):
     return X_numeric, y
 
 
-def _default_hyperparameters(task_type: str, n_features: int) -> dict:
-    # A lone DecisionTree defaults to considering every feature at each split,
-    # which would make this bagging, not a random forest: the RandomForest
-    # defaults are applied here, per task.
-    if task_type == 'classification':
-        return {"max_features": "sqrt", "criterion": "entropy"}
-    if task_type == 'regression':
-        return {"max_features": max(1, math.ceil(n_features / 3)), "criterion": "squared_error"}
-    raise ModelError(f"Invalid task type '{task_type}'. Choose 'classification' or 'regression'.")
+def resolve_hyperparameters(defaults: dict, hyperparameters: dict) -> dict:
+    """
+    Merges the configured per-task defaults (model_defaults in config) with
+    the ones from the request, which take precedence.
+    """
+    params = dict(defaults)
+    params.update(hyperparameters)
+    return params
 
 
-def train_tree(X: pd.DataFrame, y: pd.Series, task_type: str, seed: int, **hyperparameters) -> Union[DecisionTreeClassifier, DecisionTreeRegressor]:
+def train_tree(X: pd.DataFrame, y: pd.Series, task_type: str, seed: int, defaults: dict, **hyperparameters) -> Union[DecisionTreeClassifier, DecisionTreeRegressor]:
     """
     Trains one decision tree on the given (already bootstrapped) sample.
-    Hyperparameters passed explicitly override the per-task defaults.
     """
-    params = _default_hyperparameters(task_type, X.shape[1])
-    params.update(hyperparameters)
+    if task_type not in ('classification', 'regression'):
+        raise ModelError(f"Invalid task type '{task_type}'. Choose 'classification' or 'regression'.")
+
+    params = resolve_hyperparameters(defaults, hyperparameters)
 
     print(f"[Model] Training tree with random state {seed} and params {params}")
 
@@ -126,8 +125,10 @@ def load_and_predict(model_path: str, features: list) -> dict:
     except Exception as e:
         raise ModelError(f"[Model] Error during deserialization: {e}")
 
-    # Prepare input: reshape list to 2D array (1 sample)
-    new_data = np.array(features).reshape(1, -1)
+    # Wrap as a 1-row DataFrame with the training column names: the tree was
+    # fit on one (prepare_features drops non-numeric columns), and predicting
+    # with a bare array instead triggers a sklearn "no feature names" warning.
+    new_data = pd.DataFrame([features], columns=model.feature_names_in_)
 
     try:
         if hasattr(model, "predict_proba"):
