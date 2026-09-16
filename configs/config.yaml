@@ -54,3 +54,14 @@ system:
   default_n_estimators: 100       # Used when a /train request omits n_estimators
   max_retries_per_tree: 10        # Reassignments of a single tree after worker failures
   retry_backoff_seconds: 3        # Wait between health checks while no worker is healthy
+
+# Performance evaluation (scripts/benchmark.py, scripts/baseline.py).
+# Benchmark uses the same two request files for both models: edit those to change
+# dataset, task, n_estimators or hyperparameters for the whole comparison.
+evaluation:
+  master_url: "http://localhost:8080"
+  runs: 100                       # train+predict cycles per model
+  train_request: "train_request.json"
+  predict_request: "predict_request.json"
+  poll_interval_seconds: 0.05     # GET /models/{id} cadence while waiting for "ready"
+  output_csv: "evaluation_results.csv"
