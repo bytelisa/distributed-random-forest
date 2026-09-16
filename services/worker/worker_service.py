@@ -87,6 +87,7 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
             X, y = ml_model.prepare_features(df, request.target_column)
             n_rows = len(df)
             task_type = self._convert_type(request.task_type)
+            defaults = self.cfg.model_defaults(task_type)
 
             # Extra hyperparameters arrive as strings (protobuf map values
             # can't be mixed types) and are coerced back to the right
@@ -105,6 +106,7 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
                     y.iloc[indices],
                     task_type,
                     seed,
+                    defaults,
                     **hyperparams
                 )
 
