@@ -38,7 +38,7 @@ distributed-random-forest/
 │       └── worker_service.py # Implementation of the gRPC server of the Worker
 │
 ├── scripts/
-│   └── partitioner.py       # Dataset partitioning, invoked by the master
+│   └── bootstrap.py         # Deterministic bootstrap sampling, shared by the worker
 │
 ├── configs/                 # Configuration files
 │   ├── config.yaml          # Local, non-Docker execution
@@ -106,6 +106,10 @@ Example for a regression task:
 ```bash
 curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"housing.csv\", \"task_type\": \"regression\", \"target_column\": \"median_house_value\", \"n_estimators\": 10}'
 ```
+Or send training request from file:
+```bash
+curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d "@train_request.json"
+```
 Asynchronous: the response is immediate (`202 Accepted`) and only contains the `model_id`, while training keeps running in the background:
 ```json
 {"model_id": "...", "status": "training", "message": "Training started."}
@@ -124,7 +128,11 @@ curl.exe -X POST http://localhost:8080/predict/<MODEL_ID> -H "Content-Type: appl
 ```
 Example for a regression task:
 ```bash
-curl -X POST http://localhost:8080/predict/<MODEL_ID> -H "Content-Type: application/json" -d '{"features": [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.32], "task_type": "regression"}'
+curl.exe -X POST http://localhost:8080/predict/<MODEL_ID> -H "Content-Type: application/json" -d '{\"features\": [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.32], \"task_type\": \"regression\"}'
+```
+Or send predict request from file:
+```bash
+curl.exe -X POST http://localhost:8080/predict/<MODEL_ID> -H "Content-Type: application/json" -d "@predict_request.json"
 ```
 
 ## 10. Test orchestration
@@ -141,12 +149,4 @@ or rebuild a single image:
 docker-compose up --build -d master
 ```
 
-## 11. Send training request from file
-```bash
-curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d "@train_request.json"
-```
 
-## 12. Send predict request from file
-```bash
-curl.exe -X POST http://localhost:8080/predict/<MODEL_ID> -H "Content-Type: application/json" -d "@predict_request.json"
-```
