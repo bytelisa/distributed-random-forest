@@ -6,7 +6,7 @@ import tempfile
 import time
 
 import boto3
-import numpy as np
+import pandas as pd
 import yaml
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 
@@ -35,13 +35,12 @@ def download_dataset(client, bucket: str, key: str) -> str:
     return local_path
 
 
-def load_and_train(dataset_path: str, task_type: str, target_column: str, n_estimators: int, hyperparameters: dict, seed=None):
+def load_and_train(dataset_path: str, task_type: str, target_column: str, n_estimators: int, defaults: dict, hyperparameters: dict, seed=None):
     """Loads the CSV, preprocesses it like the worker does, fits one RandomForest."""
     df = ml_model.load_dataset(dataset_path)
     X, y = ml_model.prepare_features(df, target_column)
 
-    params = ml_model.default_hyperparameters(task_type, X.shape[1])
-    params.update(hyperparameters)
+    params = ml_model.resolve_hyperparameters(defaults, hyperparameters)
 
     if task_type == "classification":
         model = RandomForestClassifier(n_estimators=n_estimators, random_state=seed, n_jobs=1, **params)
@@ -53,7 +52,11 @@ def load_and_train(dataset_path: str, task_type: str, target_column: str, n_esti
 
 
 def predict(model, features: list) -> str:
-    return str(model.predict(np.array(features).reshape(1, -1))[0])
+    # Wrap as a 1-row DataFrame with the training column names: the model was
+    # fit on one, and predicting with a bare array instead triggers a sklearn
+    # "no feature names" warning.
+    X = pd.DataFrame([features], columns=model.feature_names_in_)
+    return str(model.predict(X)[0])
 
 
 def main():
@@ -79,6 +82,7 @@ def main():
         train_req["task_type"],
         train_req["target_column"],
         n_estimators,
+        cfg["model_defaults"][train_req["task_type"]],
         train_req.get("hyperparameters", {}),
     )
     train_seconds = time.perf_counter() - start
