@@ -12,12 +12,14 @@ import yaml
 
 sys.path.append(os.getcwd())
 
-from scripts import baseline  # noqa: E402
+from scripts import baseline, split  # noqa: E402
 
 # Timing comparison between the distributed system and the non-distributed
 # baseline (scripts/baseline.py). Every run of both models is driven by the
 # same two request files named in the "evaluation" section of the config:
 # edit train_request.json / predict_request.json to change what is measured.
+# dataset_url there is the source dataset: it is split into train/test
+# once, before any timing starts, and both models train on the train part.
 #
 # Distributed training time is what the user experiences: from sending
 # POST /train to GET /models/{id} first answering "ready". Baseline training
@@ -90,6 +92,7 @@ def run_distributed(cfg: dict, train_req: dict, predict_req: dict, client):
 def run_baseline(cfg: dict, train_req: dict, predict_req: dict, client, n_estimators: int):
     bucket = cfg["storage"]["bucket"]
     runs = cfg["evaluation"]["runs"]
+    defaults = cfg["model_defaults"][train_req["task_type"]]
     train_times, predict_times = [], []
 
     for run in range(runs):
@@ -100,6 +103,7 @@ def run_baseline(cfg: dict, train_req: dict, predict_req: dict, client, n_estima
             train_req["task_type"],
             train_req["target_column"],
             n_estimators,
+            defaults,
             train_req.get("hyperparameters", {}),
         )
         train_times.append(time.perf_counter() - start)
@@ -139,16 +143,27 @@ def main():
     n_estimators = train_req.get("n_estimators") or cfg["system"]["default_n_estimators"]
     client = baseline.s3_client(cfg["storage"])
 
-    print(f"[Benchmark] {evaluation['runs']} runs, {n_estimators} trees, {train_req['task_type']} on {train_req['dataset_url']}")
+    # Split first, outside any timing; stratified only for classification
+    # (there are no classes to balance in a regression target)
+    source_key = train_req["dataset_url"]
+    name = os.path.splitext(os.path.basename(source_key))[0]
+    stratify_on = train_req["target_column"] if train_req["task_type"] == "classification" else None
+    train_key, _ = split.split_and_upload(
+        client, cfg["storage"]["bucket"], source_key, name,
+        evaluation["test_size"], evaluation["split_seed"], stratify_on,
+    )
+    train_req = {**train_req, "dataset_url": train_key}
+
+    print(f"[Benchmark] {evaluation['runs']} runs, {n_estimators} trees, {train_req['task_type']} on {train_key}")
     dist_train, dist_predict = run_distributed(cfg, train_req, predict_req, client)
     base_train, base_predict = run_baseline(cfg, train_req, predict_req, client, n_estimators)
 
     rows = []
-    for name, train_times, predict_times in (("distributed", dist_train, dist_predict), ("baseline", base_train, base_predict)):
+    for model_name, train_times, predict_times in (("distributed", dist_train, dist_predict), ("baseline", base_train, base_predict)):
         train_mean, train_std = stats(train_times)
         predict_mean, predict_std = stats(predict_times)
         rows.append({
-            "model": name,
+            "model": model_name,
             "task_type": train_req["task_type"],
             "dataset": train_req["dataset_url"],
             "n_estimators": n_estimators,
@@ -159,12 +174,17 @@ def main():
             "predict_std_s": f"{predict_std:.6f}",
         })
 
-    with open(evaluation["output_csv"], "w", newline="") as f:
+    # One file per source dataset, so evaluating a second task never
+    # overwrites a previous one's results.
+    output_dir = evaluation["output_dir"]
+    os.makedirs(output_dir, exist_ok=True)
+    output_csv = os.path.join(output_dir, f"evaluation_results_{name}.csv")
+    with open(output_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
 
-    print(f"[Benchmark] results written to {evaluation['output_csv']}")
+    print(f"[Benchmark] results written to {output_csv}")
     for row in rows:
         print(f"  {row['model']:>11}: train {row['train_mean_s']}s +/- {row['train_std_s']}, predict {row['predict_mean_s']}s +/- {row['predict_std_s']}")
 
