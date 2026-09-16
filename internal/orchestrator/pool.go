@@ -345,15 +345,35 @@ func describeFailure(err error, resp *pb.TrainResponse) string {
 // A worker can use trees he didn't train for inference purposes
 // This also solves (partly) fault tolerance --> no lost state (no cached trained trees)
 
+// PredictResult is the outcome of a distributed prediction: Value is the
+// aggregated prediction, Warning is non-empty when it was computed on fewer
+// trees than the forest actually has, because one or more chunks exhausted
+// their retries.
+type PredictResult struct {
+	Value   string
+	Warning string
+}
+
+// predictChunkOutcome is what one worker's chunk of trees resolved to: the
+// predictions from any workers that answered, or the last error if none did.
+type predictChunkOutcome struct {
+	indices []int32
+	preds   []*pb.TreePrediction
+	err     error
+}
+
 // PredictDistributed splits the forest's trees among the healthy workers,
 // collects one prediction per tree and aggregates them (Bagging - Aggregation Phase).
+// A worker failure does not fail the whole request as long as at least one
+// tree's prediction comes back: the aggregation proceeds on whatever
+// arrived, and PredictResult.Warning reports what was skipped and why.
 // taskType should be "classification" or "regression"
-func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequest, taskType string, storageCfg *config.StorageConfig) (string, error) {
+func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequest, taskType string, storageCfg *config.StorageConfig) (PredictResult, error) {
 
 	// DYNAMIC HEALTH CHECK
 	activeWorkers, err := p.getHealthyWorkers(ctx)
 	if err != nil {
-		return "", err
+		return PredictResult{}, err
 	}
 	numWorkers := len(activeWorkers)
 	log.Printf("[Orchestrator] Active workers for inference: %d (configured: %d)", numWorkers, len(p.Workers))
@@ -361,27 +381,26 @@ func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequ
 	// The forest size comes from the persisted request, the trees must all be there
 	store, err := NewS3Store(ctx, storageCfg)
 	if err != nil {
-		return "", fmt.Errorf("failed to create S3 client: %w", err)
+		return PredictResult{}, fmt.Errorf("failed to create S3 client: %w", err)
 	}
 	var meta TrainRequestMetadata
 	found, err := store.GetJSON(ctx, trainRequestKey(req.ModelId), &meta)
 	if err != nil {
-		return "", fmt.Errorf("failed to read metadata of model %s: %w", req.ModelId, err)
+		return PredictResult{}, fmt.Errorf("failed to read metadata of model %s: %w", req.ModelId, err)
 	}
 	if !found {
-		return "", ErrModelNotFound
+		return PredictResult{}, ErrModelNotFound
 	}
 	present, err := store.listTreeIndices(ctx, req.ModelId)
 	if err != nil {
-		return "", fmt.Errorf("failed to list trees of model %s: %w", req.ModelId, err)
+		return PredictResult{}, fmt.Errorf("failed to list trees of model %s: %w", req.ModelId, err)
 	}
 	if int32(len(present)) < meta.NEstimators {
-		return "", fmt.Errorf("model %s is not ready: %d of %d trees missing", req.ModelId, meta.NEstimators-int32(len(present)), meta.NEstimators)
+		return PredictResult{}, fmt.Errorf("model %s is not ready: %d of %d trees missing", req.ModelId, meta.NEstimators-int32(len(present)), meta.NEstimators)
 	}
 
 	chunks := splitIndices(rangeIndices(meta.NEstimators), numWorkers)
-	resultsChan := make(chan []*pb.TreePrediction, numWorkers)
-	errChan := make(chan error, numWorkers)
+	outcomes := make(chan predictChunkOutcome, numWorkers)
 	var wg sync.WaitGroup
 
 	log.Printf("[Orchestrator] Broadcasting prediction request to %d workers...", numWorkers)
@@ -394,35 +413,43 @@ func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequ
 		go func(w *WorkerClient, chunk []int32) {
 			defer wg.Done()
 			preds, err := p.predictChunkWithRetry(ctx, req, chunk, w)
-			if err != nil {
-				errChan <- err
-				return
-			}
-			resultsChan <- preds
+			outcomes <- predictChunkOutcome{indices: chunk, preds: preds, err: err}
 		}(worker, chunks[i])
 	}
 
 	wg.Wait()
-	close(resultsChan)
-	close(errChan)
-
-	if len(errChan) > 0 {
-		return "", fmt.Errorf("prediction failed: %w", <-errChan)
-	}
+	close(outcomes)
 
 	// COLLECT PREDICTIONS
-	// We merge all partial lists into one global list of votes/values
+	// We merge all partial lists into one global list of votes/values.
+	// A chunk that exhausted its retries does not abort the whole request:
+	// its trees are simply missing from the aggregation, reported via Warning.
 	// Note: Only aggregate once (no local aggregation on worker) in order to introduce less error.
 	var globalPredictions []*pb.TreePrediction
-	for partialList := range resultsChan {
-		globalPredictions = append(globalPredictions, partialList...)
+	var missingIndices []int32
+	var lastErr error
+	for o := range outcomes {
+		if o.err != nil {
+			missingIndices = append(missingIndices, o.indices...)
+			lastErr = o.err
+			continue
+		}
+		globalPredictions = append(globalPredictions, o.preds...)
 	}
 
 	if len(globalPredictions) == 0 {
-		return "", fmt.Errorf("prediction failed: no workers returned valid results")
+		return PredictResult{}, fmt.Errorf("prediction failed: no workers returned valid results: %w", lastErr)
 	}
 
 	log.Printf("[Orchestrator] Collected %d total tree predictions. Aggregating globally...", len(globalPredictions))
+
+	var warning string
+	if len(missingIndices) > 0 {
+		sort.Slice(missingIndices, func(i, j int) bool { return missingIndices[i] < missingIndices[j] })
+		warning = fmt.Sprintf("prediction computed using %d of %d trees; trees %v could not be retrieved (worker failures exhausted retries): %v",
+			len(globalPredictions), meta.NEstimators, missingIndices, lastErr)
+		log.Printf("[Orchestrator] %s", warning)
+	}
 
 	// AGGREGATION
 	if taskType == "regression" {
@@ -430,9 +457,9 @@ func (p *WorkerPool) PredictDistributed(ctx context.Context, req *pb.PredictRequ
 		for i, pred := range globalPredictions {
 			values[i] = pred.Value
 		}
-		return aggregateRegression(values), nil
+		return PredictResult{Value: aggregateRegression(values), Warning: warning}, nil
 	}
-	return aggregateClassification(globalPredictions), nil
+	return PredictResult{Value: aggregateClassification(globalPredictions), Warning: warning}, nil
 }
 
 // predictChunkWithRetry asks worker for the predictions of chunk. When the

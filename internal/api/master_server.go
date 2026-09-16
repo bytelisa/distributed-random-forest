@@ -195,7 +195,7 @@ func (s *Server) handlePredict(c *gin.Context) {
 	}
 
 	// Send request to Orchestrator
-	predictionResult, err := s.workerPool.PredictDistributed(ctx, grpcReq, req.TaskType, &s.config.Storage)
+	result, err := s.workerPool.PredictDistributed(ctx, grpcReq, req.TaskType, &s.config.Storage)
 
 	if errors.Is(err, orchestrator.ErrModelNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "model not found", "model_id": modelID})
@@ -210,6 +210,7 @@ func (s *Server) handlePredict(c *gin.Context) {
 	// Send response to Client
 	c.JSON(http.StatusOK, PredictResponse{
 		ModelID:    modelID,
-		Prediction: predictionResult,
+		Prediction: result.Value,
+		Warning:    result.Warning,
 	})
 }

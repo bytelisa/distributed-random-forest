@@ -223,7 +223,8 @@ func TestC3_PredictAllWorkersHealthy(t *testing.T) {
 	req := &pb.PredictRequest{ModelId: "model-c3", Features: []float32{1, 2, 3}}
 	result, err := pool.PredictDistributed(context.Background(), req, "classification", &storageCfg)
 	require.NoError(t, err)
-	assert.Equal(t, "1", result, "\"1\": 2*1.0 + 2*0.4 = 2.8 vs \"0\": 2*0.6 = 1.2")
+	assert.Equal(t, "1", result.Value, "\"1\": 2*1.0 + 2*0.4 = 2.8 vs \"0\": 2*0.6 = 1.2")
+	assert.Empty(t, result.Warning, "every tree answered, nothing to warn about")
 
 	// The 4 trees are split between the 2 workers, 2 each, covering every
 	// index exactly once. Which worker gets which chunk isn't guaranteed:
@@ -260,12 +261,57 @@ func TestC4_WorkerDiesDuringPredict(t *testing.T) {
 		req := &pb.PredictRequest{ModelId: "model-c4a", Features: []float32{1}}
 		result, err := pool.PredictDistributed(context.Background(), req, "regression", &storageCfg)
 		require.NoError(t, err)
-		assert.Equal(t, "42.000000", result)
+		assert.Equal(t, "42.000000", result.Value)
+		assert.Empty(t, result.Warning, "the retry recovered every tree, nothing missing")
 
 		// The survivor answered for its own chunk and then for the crashed
 		// worker's one: no tree of the forest was left out.
 		require.Len(t, ok.PredictCalls(), 2)
 		assert.Equal(t, indices(4), predictedTrees(ok.PredictCalls()))
+	})
+
+	t.Run("some trees exhaust their retries, the rest are still aggregated with a warning", func(t *testing.T) {
+		fakeS3 := testutil.NewFakeS3(t)
+		storageCfg := testutil.NewTestStorageConfig(fakeS3.Endpoint(), "bucket")
+		store, err := orchestrator.NewS3Store(context.Background(), &storageCfg)
+		require.NoError(t, err)
+		require.NoError(t, testutil.SeedTrainedModel(context.Background(), store, "model-c4c", 6))
+
+		// Every worker fails specifically on tree 4 (e.g. that one file is
+		// unreachable), regardless of which one is asked - unlike the
+		// subtest above, no retry can ever rescue it. With 6 trees over 2
+		// workers, tree 4 falls in the chunk [3,4,5]: that whole chunk
+		// fails together (retries operate at chunk granularity), while the
+		// other chunk, [0,1,2], answers normally from any worker.
+		const poisoned = int32(4)
+		unreliable := func(_ context.Context, req *pb.PredictRequest) (*pb.PredictResponse, error) {
+			for _, idx := range req.TreeIndices {
+				if idx == poisoned {
+					return nil, status.Error(codes.Unavailable, "tree file unreachable")
+				}
+			}
+			resp := &pb.PredictResponse{}
+			for range req.TreeIndices {
+				resp.Predictions = append(resp.Predictions, testutil.ClassVote("cat"))
+			}
+			return resp, nil
+		}
+
+		w0 := testutil.NewFakeWorker(t)
+		w0.PredictFunc = unreliable
+		w1 := testutil.NewFakeWorker(t)
+		w1.PredictFunc = unreliable
+
+		pool := newPool(t, w0.Address, w1.Address)
+
+		req := &pb.PredictRequest{ModelId: "model-c4c", Features: []float32{1}}
+		result, err := pool.PredictDistributed(context.Background(), req, "classification", &storageCfg)
+		require.NoError(t, err, "the chunk without the poisoned tree answered - not a total failure")
+		assert.Equal(t, "cat", result.Value)
+
+		require.NotEmpty(t, result.Warning)
+		assert.Contains(t, result.Warning, "3 of 6 trees")
+		assert.Contains(t, result.Warning, "[3 4 5]", "the whole chunk carrying tree 4 is named as missing")
 	})
 
 	t.Run("all workers fail, an explicit error is returned", func(t *testing.T) {
@@ -335,7 +381,7 @@ func TestC6_MoreWorkersThanTrees(t *testing.T) {
 	req := &pb.PredictRequest{ModelId: "model-c6", Features: []float32{1}}
 	result, err := pool.PredictDistributed(context.Background(), req, "classification", &storageCfg)
 	require.NoError(t, err)
-	assert.Equal(t, "cat", result)
+	assert.Equal(t, "cat", result.Value)
 
 	var called int
 	var all []*pb.PredictRequest

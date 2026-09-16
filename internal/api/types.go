@@ -32,4 +32,8 @@ type PredictRequest struct {
 type PredictResponse struct {
 	ModelID    string `json:"model_id"`
 	Prediction string `json:"prediction"`
+	// Warning is set when the prediction was computed on fewer trees than
+	// the forest actually has, because one or more workers exhausted their
+	// retries - the result is still valid, just based on a partial forest.
+	Warning string `json:"warning,omitempty"`
 }
