@@ -37,35 +37,30 @@ system:
   max_retries_per_tree: 10        # Reassignments of a single tree after worker failures
   retry_backoff_seconds: 3        # Wait between health checks while no worker is healthy
 
+# Hyperparameters applied by both the workers and the baseline when a
+# request doesn't specify them (a lone DecisionTree has different defaults
+# from a RandomForest). Values are passed to scikit-learn as they are:
+# max_features accepts "sqrt", "log2", an int, or a fraction of the features.
+model_defaults:
+  classification:
+    max_features: "sqrt"
+    criterion: "entropy"
+  regression:
+    max_features: 0.3333          # about a third of the features
+    criterion: "squared_error"
+
 # Performance evaluation (scripts/benchmark.py, scripts/baseline.py).
 # Benchmark uses the same two request files for both models: edit those to change
 # dataset, task, n_estimators or hyperparameters for the whole comparison.
+# dataset_url in train_request is the source dataset: the benchmark splits it
+# into <name>_train.csv / <name>_test.csv first, and trains both models on
+# the train part.
 evaluation:
   master_url: "http://<ALB-DNS-NAME>"   # Application Load Balancer in front of the master
   runs: 100                       # train+predict cycles per model
   train_request: "train_request.json"
   predict_request: "predict_request.json"
+  test_size: 0.2                  # fraction of the source dataset held out for test
+  split_seed: 42                  # shuffle/split randomness, fixed for reproducibility
   poll_interval_seconds: 0.05     # GET /models/{id} cadence while waiting for "ready"
-  output_csv: "evaluation_results.csv"
-
-# Task di riferimento per test rapidi post-deploy (stessi di locale/docker).
-# Se/quando scegli dataset più interessanti, aggiungi qui le nuove voci
-# invece di sostituire queste, così mantieni un test di smoke rapido.
-tasks:
-  - name: "iris-classification"
-    type: "classification"
-    dataset_path: "data/iris.csv"
-    target_column: "Species"
-    hyperparameters:
-      n_estimators: 10
-      max_depth: 5
-    test_features: [5.0, 3.6, 1.4, 0.2]
-
-  - name: "housing-regression"
-    type: "regression"
-    dataset_path: "data/housing.csv"
-    target_column: "median_house_value"
-    hyperparameters:
-      n_estimators: 15
-      max_depth: 10
-    test_features: [-122.23, 37.88, 41.0, 880.0, 129.0, 322.0, 126.0, 8.3252]
+  output_dir: "performance/output"   # per-dataset files: evaluation_results_<name>.csv / accuracy_results_<name>.csv

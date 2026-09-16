@@ -42,6 +42,10 @@ class Config:
         # Default to "models/"
         return self._cfg['storage'].get('base_path_prefix', 'models/')
 
+    def model_defaults(self, task_type: str) -> dict:
+        # Hyperparameters applied when a request doesn't specify them, per task
+        return dict(self._cfg['model_defaults'][task_type])
+
 # Global instance or factory to load it
 def load_config():
     return Config()
