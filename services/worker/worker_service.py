@@ -1,4 +1,5 @@
 
+import json
 import os
 import grpc
 from api.proto.worker.v1 import worker_pb2
@@ -38,6 +39,10 @@ def _coerce_hyperparameter(value: str):
 
 def _tree_key(model_id: str, tree_index: int) -> str:
     return f"models/{model_id}/model_parts/tree_{tree_index}.joblib"
+
+
+def _oob_key(model_id: str, tree_index: int) -> str:
+    return f"models/{model_id}/model_parts/tree_{tree_index}_oob.json"
 
 
 class WorkerService(worker_pb2_grpc.WorkerServicer):
@@ -117,8 +122,21 @@ class WorkerService(worker_pb2_grpc.WorkerServicer):
                 ml_model.save_model(tree, local_model_path)
                 self.storage.upload_file(local_model_path, _tree_key(request.model_id, tree_index))
 
+                # 4. OOB PREDICTIONS: this tree's own held-out estimate, on
+                # the rows its bootstrap sample left out. Uploaded as a small
+                # artifact next to the tree - if this upload is the one that
+                # gets lost to a crash, scripts/evaluate_oob.py notices the
+                # gap and skips this tree rather than blocking on it; the
+                # tree itself is already safely on S3 either way.
+                oob_entries = ml_model.compute_oob_predictions(tree, X, task_type, indices)
+                oob_filename = f"tree_{tree_index}_oob.json"
+                local_oob_path = os.path.join(self.local_temp_dir, oob_filename)
+                with open(local_oob_path, "w") as f:
+                    json.dump(oob_entries, f)
+                self.storage.upload_file(local_oob_path, _oob_key(request.model_id, tree_index))
+
                 # DEBUG
-                print(f"[Worker] Tree {tree_index} of model {request.model_id} uploaded.")
+                print(f"[Worker] Tree {tree_index} of model {request.model_id} uploaded ({len(oob_entries)} OOB rows).")
 
             print(f"---[Worker] TRAIN JOB COMPLETED ---")
 
