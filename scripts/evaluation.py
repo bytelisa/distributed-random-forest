@@ -91,7 +91,9 @@ def main():
     benchmark.wait_until_ready(master_url, model_id, evaluation["poll_interval_seconds"], cfg["system"]["timeout_training_seconds"])
 
     dist_metrics, partial = evaluate_distributed(master_url, model_id, X_test, y_test, task_type)
-    benchmark.delete_model(client, bucket, model_id)
+    # Not deleted here on purpose: scripts/evaluate_oob.py needs this same
+    # model_id alive to compute the OOB score on the same trained forest,
+    # not a separately trained one. It deletes the model itself once done.
     if partial:
         print(f"[Evaluation] {partial}/{len(test_df)} distributed predictions were partial (a worker exhausted its retries)")
 
@@ -131,6 +133,7 @@ def main():
             print(f"  {row['model']:>11}: accuracy {row['accuracy']:.4f}")
         else:
             print(f"  {row['model']:>11}: mse {row['mse']:.4f}, rmse {row['rmse']:.4f}")
+    print(f"[Evaluation] distributed model {model_id} left on S3 - run scripts/evaluate_oob.py {model_id} to also score it on OOB, then delete it")
 
 
 if __name__ == "__main__":
