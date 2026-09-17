@@ -89,7 +89,7 @@ go run cmd/master/master_main.go
 ```bash
 docker-compose up -d
 ```
-Manage the bucket and upload datasets (e.g. `data/iris.csv`, `data/housing.csv`) on this link:
+Manage the bucket and upload datasets (e.g. `data/sdss.csv`, `data/housing.csv`) on this link:
 ```bash
 http://localhost:9001
 ```
@@ -100,7 +100,7 @@ http://localhost:9001
 
 Example for a classification task:
 ```bash
-curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"iris.csv\", \"task_type\": \"classification\", \"target_column\": \"Species\", \"n_estimators\": 10}'
+curl.exe -X POST http://localhost:8080/train -H "Content-Type: application/json" -d '{\"dataset_url\": \"sdss.csv\", \"task_type\": \"classification\", \"target_column\": \"class\", \"n_estimators\": 10}'
 ```
 Example for a regression task:
 ```bash
@@ -124,7 +124,7 @@ When status is `"ready"`, the model can be used for inference.
 ## 9. Send an example predict request
 Example for a classification task:
 ```bash
-curl.exe -X POST http://localhost:8080/predict/<MODEL_ID> -H "Content-Type: application/json" -d '{\"features\": [5.0, 3.6, 1.4, 0.2], \"task_type\": \"classification\"}'
+curl.exe -X POST http://localhost:8080/predict/<MODEL_ID> -H "Content-Type: application/json" -d '{\"features\": [183.5313257, 0.08969303, 19.47406, 17.0424, 15.94699, 15.50342, 15.22531, -0.00000896], \"task_type\": \"classification\"}'
 ```
 Example for a regression task:
 ```bash
