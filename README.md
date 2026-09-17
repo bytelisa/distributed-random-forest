@@ -157,8 +157,12 @@ python scripts/baseline.py     # non-distributed baseline: one train + predict, 
 python scripts/benchmark.py    # distributed vs baseline: repeated train/predict timings (mean/std) -> CSV
 python scripts/evaluation.py   # distributed vs baseline: accuracy/RMSE on the held-out test set -> CSV
 ```
+`evaluation.py` trains one distributed model, evaluates it, and deliberately leaves it on S3 instead of deleting it — it prints the `model_id` at the end. Feed that same id to `evaluate_oob.py` to also score the model on its own out-of-bag predictions (the per-tree artifacts left by training), then delete it:
+```bash
+python scripts/evaluate_oob.py <model_id>   # OOB accuracy/RMSE from the per-tree artifacts -> CSV, then deletes the model
+```
 
-For the scalability study (fixed `n_estimators`, dataset size and worker count swept automatically): the `synthetic`/`scalability` sections of the config control dataset sizes, worker counts, repetitions and how workers are started/stopped between configurations (`docker` or `aws_ec2` backend).
+For the scalability study (fixed `n_estimators`, and variable configuration of dataset size and worker count): the `synthetic`/`scalability` sections of the config control dataset sizes, worker counts, repetitions and how workers are started/stopped between configurations (`docker` or `aws_ec2` backend).
 
 ```bash
 python scripts/synthetic.py         # generates and uploads synthetic_<size>.csv for each configured size
