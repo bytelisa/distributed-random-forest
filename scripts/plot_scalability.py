@@ -4,6 +4,7 @@ import os
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import pandas as pd
+import yaml
 
 # Static PNG plots from scripts/scalability.py's CSV output, for the report.
 
@@ -90,23 +91,60 @@ def plot_efficiency(df: pd.DataFrame, out_path: str):
     print(f"[Plot] saved {out_path}")
 
 
+def plot_boxplot(raw_csv: str, out_path: str):
+    if not os.path.exists(raw_csv):
+        print(f"[Plot] {raw_csv} not found, skipping box plot")
+        return
+
+    raw = pd.read_csv(raw_csv)
+    raw["dataset_size_n"] = raw["dataset_size"].apply(parse_size)
+    sizes = sorted(raw["dataset_size_n"].unique())
+
+    fig, axes = plt.subplots(1, len(sizes), figsize=(5 * len(sizes), 5), squeeze=False, sharey=True)
+    for ax, size_n in zip(axes[0], sizes):
+        group = raw[raw["dataset_size_n"] == size_n]
+        worker_counts = sorted(group["num_workers"].unique())
+        data = [group[group["num_workers"] == w]["train_s"] for w in worker_counts]
+        ax.boxplot(data, tick_labels=worker_counts)
+        label = group["dataset_size"].iloc[0]
+        ax.set_title(f"{label} rows")
+        ax.set_xlabel("Worker count")
+        ax.grid(True, axis="y", alpha=0.3)
+    axes[0][0].set_ylabel("Training time (s)")
+
+    fig.suptitle("Training time distribution vs worker count")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"[Plot] saved {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot scripts/scalability.py's CSV output.")
-    parser.add_argument("--csv", default="performance/scalability/scalability_results.csv")
-    parser.add_argument("--output-dir", default="performance/scalability/plots")
+    parser.add_argument("--config", default="configs/config.yaml")
+    parser.add_argument("--csv")
+    parser.add_argument("--output-dir")
     args = parser.parse_args()
 
-    df = load(args.csv)
-    os.makedirs(args.output_dir, exist_ok=True)
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+    scal_output_dir = cfg["scalability"]["output_dir"]
+    csv_path = args.csv or os.path.join(scal_output_dir, "scalability_results.csv")
+    raw_csv = os.path.join(scal_output_dir, "scalability_runs.csv")
+    output_dir = args.output_dir or os.path.join(scal_output_dir, "plots")
+
+    df = load(csv_path)
+    os.makedirs(output_dir, exist_ok=True)
 
     plot_time(df, "train_mean_s", "train_ci95_s", "Training time (s)",
               "Training time vs worker count (95% CI)",
-              os.path.join(args.output_dir, "training_time.png"))
+              os.path.join(output_dir, "training_time.png"))
     plot_time(df, "predict_mean_s", "predict_ci95_s", "Prediction time (s)",
               "Prediction time vs worker count (95% CI)",
-              os.path.join(args.output_dir, "predict_time.png"))
-    plot_speedup(df, os.path.join(args.output_dir, "speedup.png"))
-    plot_efficiency(df, os.path.join(args.output_dir, "efficiency.png"))
+              os.path.join(output_dir, "predict_time.png"))
+    plot_speedup(df, os.path.join(output_dir, "speedup.png"))
+    plot_efficiency(df, os.path.join(output_dir, "efficiency.png"))
+    plot_boxplot(raw_csv, os.path.join(output_dir, "training_time_boxplot.png"))
 
 
 if __name__ == "__main__":

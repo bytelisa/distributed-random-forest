@@ -69,7 +69,7 @@ def aggregate_regression(entries_by_row):
     return {row: sum(values) / len(values) for row, values in entries_by_row.items()}
 
 
-def evaluate_oob(cfg, client, bucket, model_id, name=None):
+def evaluate_oob(cfg, client, bucket, model_id, name=None, write_csv=True):
     """Aggregates model_id's per-tree OOB artifacts into one score, writes
     the CSV and deletes the model. Called both from this script's own CLI
     and directly by scripts/evaluation.py, on the model it just evaluated
@@ -124,28 +124,29 @@ def evaluate_oob(cfg, client, bucket, model_id, name=None):
 
     print(f"[OOB] {task_type} on {train_key}, {n_estimators} trees, {len(predictions)}/{len(df)} rows scored: {score_name} = {score:.4f}")
 
-    if name is None:
-        name = os.path.splitext(os.path.basename(train_key))[0]
-    output_dir = cfg["evaluation"]["output_dir"]
-    os.makedirs(output_dir, exist_ok=True)
-    output_csv = os.path.join(output_dir, f"oob_results_{name}.csv")
-    with open(output_csv, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=[
-            "model_id", "task_type", "dataset", "n_estimators",
-            "rows_scored", "rows_excluded", "trees_missing_oob", score_name,
-        ])
-        writer.writeheader()
-        writer.writerow({
-            "model_id": model_id,
-            "task_type": task_type,
-            "dataset": train_key,
-            "n_estimators": n_estimators,
-            "rows_scored": len(predictions),
-            "rows_excluded": len(excluded_rows),
-            "trees_missing_oob": len(missing),
-            score_name: f"{score:.6f}",
-        })
-    print(f"[OOB] results written to {output_csv}")
+    if write_csv:
+        if name is None:
+            name = os.path.splitext(os.path.basename(train_key))[0]
+        output_dir = cfg["evaluation"]["output_dir"]
+        os.makedirs(output_dir, exist_ok=True)
+        output_csv = os.path.join(output_dir, f"oob_results_{name}.csv")
+        with open(output_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=[
+                "model_id", "task_type", "dataset", "n_estimators",
+                "rows_scored", "rows_excluded", "trees_missing_oob", score_name,
+            ])
+            writer.writeheader()
+            writer.writerow({
+                "model_id": model_id,
+                "task_type": task_type,
+                "dataset": train_key,
+                "n_estimators": n_estimators,
+                "rows_scored": len(predictions),
+                "rows_excluded": len(excluded_rows),
+                "trees_missing_oob": len(missing),
+                score_name: f"{score:.6f}",
+            })
+        print(f"[OOB] results written to {output_csv}")
 
     benchmark.delete_model(client, bucket, model_id)
     print(f"[OOB] model {model_id} deleted from S3.")

@@ -1,2 +1,2 @@
 model_id,task_type,dataset,n_estimators,rows_scored,rows_excluded,trees_missing_oob,oob_accuracy
-a0834455-2758-42b5-87c9-e91e4d70110c,classification,sdss_train.csv,100,8000,0,0,0.989250
+d0f54703-896d-48f2-a3eb-264b791d6968,classification,sdss_train.csv,100,8000,0,0,0.989500

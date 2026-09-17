@@ -184,6 +184,12 @@ def run_one_size(cfg, master_url, train_key, sample_features, n_estimators, targ
 FIELDNAMES = ["dataset_size", "num_workers", "n_estimators", "runs",
               "train_mean_s", "train_ci95_s", "predict_mean_s", "predict_ci95_s"]
 
+# One row per individual run, not per configuration - the aggregate CSV above
+# only keeps mean/CI95, discarding the underlying distribution. Kept
+# separately so a box plot (or any other per-run analysis) doesn't need to
+# be decided on before running the campaign.
+RAW_FIELDNAMES = ["dataset_size", "num_workers", "run", "train_s", "predict_s"]
+
 
 def load_existing(output_csv):
     results = {}
@@ -198,6 +204,21 @@ def write_csv(output_csv, results):
     rows_sorted = sorted(results.values(), key=lambda r: (size_sort_key(str(r["dataset_size"])), int(r["num_workers"])))
     with open(output_csv, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows_sorted)
+
+
+def load_existing_raw(raw_csv):
+    if os.path.exists(raw_csv):
+        with open(raw_csv, newline="") as f:
+            return list(csv.DictReader(f))
+    return []
+
+
+def write_raw_csv(raw_csv, raw_rows):
+    rows_sorted = sorted(raw_rows, key=lambda r: (size_sort_key(str(r["dataset_size"])), int(r["num_workers"]), int(r["run"])))
+    with open(raw_csv, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=RAW_FIELDNAMES)
         writer.writeheader()
         writer.writerows(rows_sorted)
 
@@ -218,6 +239,8 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
     output_csv = os.path.join(output_dir, "scalability_results.csv")
     results = load_existing(output_csv)
+    raw_csv = os.path.join(output_dir, "scalability_runs.csv")
+    raw_rows = load_existing_raw(raw_csv)
 
     addresses = cfg["workers"]["addresses"]
     health_check_timeout = cfg["system"]["timeout_health_check_seconds"]
@@ -272,10 +295,24 @@ def main():
                 "predict_ci95_s": f"{predict_ci95:.6f}",
             }
 
+            # Drop this configuration's previous raw rows (only relevant on
+            # --force) before appending the fresh ones, so a redo doesn't
+            # leave stale runs mixed in with the new ones.
+            raw_rows = [r for r in raw_rows if not (r["dataset_size"] == size_label and int(r["num_workers"]) == num_workers)]
+            for run_index, (train_s, predict_s) in enumerate(zip(train_times, predict_times)):
+                raw_rows.append({
+                    "dataset_size": size_label,
+                    "num_workers": num_workers,
+                    "run": run_index,
+                    "train_s": f"{train_s:.6f}",
+                    "predict_s": f"{predict_s:.6f}",
+                })
+
             # Written after every configuration, not just at the end: a crash
             # on a later configuration doesn't lose the ones already done.
             write_csv(output_csv, results)
-            print(f"[Scalability] saved to {output_csv}")
+            write_raw_csv(raw_csv, raw_rows)
+            print(f"[Scalability] saved to {output_csv} and {raw_csv}")
 
     print(f"[Scalability] done. {output_csv}")
 

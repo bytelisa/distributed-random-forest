@@ -112,3 +112,17 @@ synthetic:
     informative: ["redshift", "u", "g"]
     redundant: ["r", "i", "z"]
     noise: ["ra", "dec"]
+
+# OOB/accuracy vs n_estimators (scripts/validation_curve.py).
+validation_curve:
+  train_request: "train_request.json"
+  n_estimators_values: [10, 30, 50, 100, 150, 200]
+  test_sample_size: 300   # caps live /predict rows per sweep point, full test set is too slow x6
+
+# Runs everything unattended (scripts/run_pipeline.py).
+pipeline:
+  run_scalability: true
+  run_validation_curve: true
+  tasks:
+    - "train_request.json"
+    - "train_request_housing.json"

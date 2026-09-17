@@ -3,6 +3,7 @@ import csv
 import json
 import os
 import sys
+import time
 
 import yaml
 from sklearn.metrics import mean_squared_error
@@ -25,6 +26,7 @@ def evaluate_distributed(master_url: str, model_id: str, X_test, y_test, task_ty
     correct = 0
     squared_errors = []
     partial = 0
+    predictions = []
 
     for features, true_value in zip(X_test.values.tolist(), y_test.tolist()):
         status, body = benchmark.http_json("POST", f"{master_url}/predict/{model_id}", {"features": features, "task_type": task_type})
@@ -32,6 +34,7 @@ def evaluate_distributed(master_url: str, model_id: str, X_test, y_test, task_ty
             raise RuntimeError(f"POST /predict rejected ({status}): {body}")
         if body.get("warning"):
             partial += 1
+        predictions.append(body["prediction"])
 
         if task_type == "classification":
             if body["prediction"] == str(true_value):
@@ -40,37 +43,41 @@ def evaluate_distributed(master_url: str, model_id: str, X_test, y_test, task_ty
             squared_errors.append((float(body["prediction"]) - true_value) ** 2)
 
     if task_type == "classification":
-        return {"accuracy": correct / len(y_test)}, partial
+        return {"accuracy": correct / len(y_test)}, partial, predictions
     mse = sum(squared_errors) / len(squared_errors)
-    return {"mse": mse, "rmse": mse ** 0.5}, partial
+    return {"mse": mse, "rmse": mse ** 0.5}, partial, predictions
 
 
 def evaluate_baseline(model, X_test, y_test, task_type: str):
+    predictions = model.predict(X_test)
     if task_type == "classification":
-        return {"accuracy": model.score(X_test, y_test)}
-    mse = mean_squared_error(y_test, model.predict(X_test))
-    return {"mse": mse, "rmse": mse ** 0.5}
+        # String comparison, same convention as evaluate_distributed (whose
+        # predictions always come back as strings over the wire) - so the two
+        # accuracies are computed the exact same way, not just numerically
+        # close by coincidence.
+        correct = sum(1 for pred, true in zip(predictions, y_test) if str(pred) == str(true))
+        return {"accuracy": correct / len(y_test)}, [str(p) for p in predictions]
+    mse = mean_squared_error(y_test, predictions)
+    return {"mse": mse, "rmse": mse ** 0.5}, list(predictions)
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Compute accuracy/error of the distributed system and the baseline on the same held-out test set.")
-    parser.add_argument("--config", default="configs/config.yaml")
-    args = parser.parse_args()
-
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
+def run_evaluation(cfg, train_req, name, write_files=True, test_sample_size=None):
+    """Trains one model, measures accuracy against the baseline and OOB error
+    on the same held-out split, optionally writing accuracy_results_{name}.csv
+    / predictions_{name}.csv / oob_results_{name}.csv. write_files=False skips
+    all three (used by scripts/validation_curve.py, which sweeps n_estimators
+    on the same name/dataset and writes its own aggregate CSV instead).
+    test_sample_size caps how many test rows go through the live /predict
+    loop (both models, same rows) - full test set if left unset.
+    Returns (dist_metrics, base_metrics, oob_score_name, oob_score, train_time_s)."""
     evaluation = cfg["evaluation"]
     master_url = evaluation["master_url"].rstrip("/")
-    with open(evaluation["train_request"]) as f:
-        train_req = json.load(f)
-
     task_type = train_req["task_type"]
     target_column = train_req["target_column"]
     n_estimators = train_req.get("n_estimators") or cfg["system"]["default_n_estimators"]
     client = baseline.s3_client(cfg["storage"])
     bucket = cfg["storage"]["bucket"]
 
-    name = os.path.splitext(os.path.basename(train_req["dataset_url"]))[0]
     stratify_on = target_column if task_type == "classification" else None
     train_key, test_key = split.split_and_upload(
         client, bucket, train_req["dataset_url"], name,
@@ -82,60 +89,85 @@ def main():
     test_df = ml_model.load_dataset(test_path)
     X_test, y_test = ml_model.prepare_features(test_df, target_column)
     os.remove(test_path)
+    if test_sample_size and test_sample_size < len(X_test):
+        X_test, y_test = X_test.iloc[:test_sample_size], y_test.iloc[:test_sample_size]
 
-    print(f"[Evaluation] {task_type} on {train_key}, {n_estimators} trees, {len(test_df)} test rows")
+    print(f"[Evaluation] {task_type} on {train_key}, {n_estimators} trees, {len(X_test)} test rows")
 
+    train_start = time.perf_counter()
     status, body = benchmark.http_json("POST", f"{master_url}/train", train_req)
     if status != 202:
         raise RuntimeError(f"POST /train rejected ({status}): {body}")
     model_id = body["model_id"]
     benchmark.wait_until_ready(master_url, model_id, evaluation["poll_interval_seconds"], cfg["system"]["timeout_training_seconds"])
+    train_time_s = time.perf_counter() - train_start
 
-    dist_metrics, partial = evaluate_distributed(master_url, model_id, X_test, y_test, task_type)
-    # Not deleted here: evaluate_oob() below needs this same model_id alive
-    # to score it on the same trained forest, not a separately trained one.
-    # It deletes the model itself once it's done with it.
+    dist_metrics, partial, dist_predictions = evaluate_distributed(master_url, model_id, X_test, y_test, task_type)
     if partial:
-        print(f"[Evaluation] {partial}/{len(test_df)} distributed predictions were partial (a worker exhausted its retries)")
+        print(f"[Evaluation] {partial}/{len(X_test)} distributed predictions were partial (a worker exhausted its retries)")
 
     dataset_path = baseline.download_dataset(client, bucket, train_key)
     defaults = cfg["model_defaults"][task_type]
     model = baseline.load_and_train(dataset_path, task_type, target_column, n_estimators, defaults, train_req.get("hyperparameters", {}))
     os.remove(dataset_path)
-    base_metrics = evaluate_baseline(model, X_test, y_test, task_type)
+    base_metrics, base_predictions = evaluate_baseline(model, X_test, y_test, task_type)
 
-    rows = []
-    for model_name, metrics, partial_count in (("distributed", dist_metrics, partial), ("baseline", base_metrics, 0)):
-        rows.append({
-            "model": model_name,
-            "task_type": task_type,
-            "dataset": train_key,
-            "n_estimators": n_estimators,
-            "test_rows": len(test_df),
-            "accuracy": metrics.get("accuracy", ""),
-            "mse": metrics.get("mse", ""),
-            "rmse": metrics.get("rmse", ""),
-            "partial_predictions": partial_count,
-        })
+    if write_files:
+        rows = []
+        for model_name, metrics, partial_count in (("distributed", dist_metrics, partial), ("baseline", base_metrics, 0)):
+            rows.append({
+                "model": model_name,
+                "task_type": task_type,
+                "dataset": train_key,
+                "n_estimators": n_estimators,
+                "test_rows": len(X_test),
+                "accuracy": metrics.get("accuracy", ""),
+                "mse": metrics.get("mse", ""),
+                "rmse": metrics.get("rmse", ""),
+                "partial_predictions": partial_count,
+            })
 
-    # One file per source dataset, so evaluating a second task never
-    # overwrites a previous one's results.
-    output_dir = evaluation["output_dir"]
-    os.makedirs(output_dir, exist_ok=True)
-    output_csv = os.path.join(output_dir, f"accuracy_results_{name}.csv")
-    with open(output_csv, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
+        output_dir = evaluation["output_dir"]
+        os.makedirs(output_dir, exist_ok=True)
+        output_csv = os.path.join(output_dir, f"accuracy_results_{name}.csv")
+        with open(output_csv, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+        print(f"[Evaluation] results written to {output_csv}")
+        for row in rows:
+            if task_type == "classification":
+                print(f"  {row['model']:>11}: accuracy {row['accuracy']:.4f}")
+            else:
+                print(f"  {row['model']:>11}: mse {row['mse']:.4f}, rmse {row['rmse']:.4f}")
 
-    print(f"[Evaluation] results written to {output_csv}")
-    for row in rows:
         if task_type == "classification":
-            print(f"  {row['model']:>11}: accuracy {row['accuracy']:.4f}")
-        else:
-            print(f"  {row['model']:>11}: mse {row['mse']:.4f}, rmse {row['rmse']:.4f}")
+            predictions_csv = os.path.join(output_dir, f"predictions_{name}.csv")
+            with open(predictions_csv, "w", newline="") as f:
+                writer = csv.DictWriter(f, fieldnames=["row", "true_label", "distributed_prediction", "baseline_prediction"])
+                writer.writeheader()
+                for row, (true_label, dist_pred, base_pred) in enumerate(zip(y_test.tolist(), dist_predictions, base_predictions)):
+                    writer.writerow({"row": row, "true_label": true_label, "distributed_prediction": dist_pred, "baseline_prediction": base_pred})
+            print(f"[Evaluation] per-row predictions written to {predictions_csv}")
 
-    evaluate_oob(cfg, client, bucket, model_id, name)
+    oob_name, oob_score = evaluate_oob(cfg, client, bucket, model_id, name, write_csv=write_files)
+    return dist_metrics, base_metrics, oob_name, oob_score, train_time_s
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Compute accuracy/error of the distributed system and the baseline on the same held-out test set.")
+    parser.add_argument("--config", default="configs/config.yaml")
+    parser.add_argument("--train-request")
+    args = parser.parse_args()
+
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+    request_path = args.train_request or cfg["evaluation"]["train_request"]
+    with open(request_path) as f:
+        train_req = json.load(f)
+    name = os.path.splitext(os.path.basename(train_req["dataset_url"]))[0]
+
+    run_evaluation(cfg, train_req, name)
 
 
 if __name__ == "__main__":
