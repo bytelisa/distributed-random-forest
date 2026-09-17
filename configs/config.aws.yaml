@@ -13,6 +13,7 @@ workers:
   grpc_max_threads: 10
   addresses:
     # IP PRIVATI delle istanze worker EC2 (stessa VPC del master), non pubblici.
+    # Un indirizzo per ogni istanza worker da provisionare
     - "172.31.25.45:50051"    # Worker 1
     - "172.31.30.123:50051"   # Worker 2
 
@@ -30,7 +31,7 @@ storage:
 # dataset più grandi e trasferimenti verso S3 reale, richiede più tempo
 # dei test rapidi su iris/housing. Da ricalibrare in base ai task scelti.
 system:
-  timeout_training_seconds: 300
+  timeout_training_seconds: 600
   timeout_prediction_seconds: 15
   timeout_health_check_seconds: 3
   default_n_estimators: 100       # Used when a /train request omits n_estimators
@@ -38,15 +39,14 @@ system:
   retry_backoff_seconds: 3        # Wait between health checks while no worker is healthy
 
 # Hyperparameters applied by both the workers and the baseline when a
-# request doesn't specify them (a lone DecisionTree has different defaults
-# from a RandomForest). Values are passed to scikit-learn as they are:
+# request doesn't specify them. Values are passed to scikit-learn as they are:
 # max_features accepts "sqrt", "log2", an int, or a fraction of the features.
 model_defaults:
   classification:
     max_features: "sqrt"
     criterion: "entropy"
   regression:
-    max_features: 0.3333          # about a third of the features
+    max_features: 0.3333          # about a third of the features, chosen as it was suggested by prof. during class :P
     criterion: "squared_error"
 
 # Performance evaluation (scripts/benchmark.py, scripts/baseline.py).
@@ -63,4 +63,52 @@ evaluation:
   test_size: 0.2                  # fraction of the source dataset held out for test
   split_seed: 42                  # shuffle/split randomness, fixed for reproducibility
   poll_interval_seconds: 0.05     # GET /models/{id} cadence while waiting for "ready"
-  output_dir: "performance/output"   # per-dataset files: evaluation_results_<name>.csv / accuracy_results_<name>.csv
+  output_dir: "performance/evaluation"   # per-dataset files: evaluation_results_<name>.csv / accuracy_results_<name>.csv
+
+# Scalability analysis (scripts/scalability.py). Requires synthetic_<size>.csv
+# already on S3 for each size below (classification). n_estimators is fixed on
+# purpose: only the worker count varies, across worker_counts, automatically -
+# the script starts/stops the EC2 worker INSTANCES themselves (not just the
+# process on them) via boto3, using instance_ids below (same order as
+# workers.addresses above - index 0 is worker 1, etc). NOT VERIFIED END TO END YET
+# worker_counts and instance_ids below are placeholders: fill in with number of instances to
+# provision (may be fewer than 8 depending on budget). settle_seconds is much larger than the docker config: EC2
+# instances take real time to boot and start the worker process, a plain
+# "instance running" state isn't the same as "worker ready".
+scalability:
+  n_estimators: 100
+  dataset_sizes: ["10k", "20k", "50k"]
+  target_column: "target"
+  runs: 10
+  output_dir: "performance/scalability"   # separate from evaluation.output_dir, so plotting scripts can tell the two apart
+  worker_counts: [1, 2]   # placeholder - adjust to however many instances you provision
+  worker_control:
+    backend: "aws_ec2"
+    region: "us-east-1"
+    instance_ids:
+      - "i-REPLACE_ME_WORKER_1"
+      - "i-REPLACE_ME_WORKER_2"
+    settle_seconds: 90
+
+# Synthetic dataset generation (scripts/synthetic.py), consumed by the
+# scalability study above (n_samples for each size come from
+# scalability.dataset_sizes, not repeated here, so the two can't diverge).
+# Column layout mirrors SDSS: redshift and two photometric bands are
+# informative (redshift is the strongest astrophysical signal separating
+# quasars from stars/galaxies; band luminosity carries real signal too),
+# the remaining three bands are redundant with those (adjacent-wavelength
+# photometry is strongly correlated), and sky position (ra, dec) is pure
+# noise - there's no physical reason an object's type depends on where it
+# is in the sky. len(informative)+len(redundant)+len(noise) must equal
+# n_features.
+synthetic:
+  seed: 42
+  n_features: 8
+  n_informative: 3
+  n_redundant: 3
+  n_classes: 3
+  class_sep: 1.0          # sklearn default: no reason to deviate, scalability.py only times train/predict, it never scores accuracy
+  columns:
+    informative: ["redshift", "u", "g"]
+    redundant: ["r", "i", "z"]
+    noise: ["ra", "dec"]

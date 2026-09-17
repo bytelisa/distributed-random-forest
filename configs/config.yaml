@@ -14,6 +14,11 @@ workers:
     - "localhost:50051"   # Worker 1
     - "localhost:50052"   # Worker 2
     - "localhost:50053"   # Worker 3
+    - "localhost:50054"   # Worker 4 - stopped by default, see scalability.worker_control below
+    - "localhost:50055"   # Worker 5
+    - "localhost:50056"   # Worker 6
+    - "localhost:50057"   # Worker 7
+    - "localhost:50058"   # Worker 8
 
 storage:
   type: "s3"
@@ -59,4 +64,49 @@ evaluation:
   test_size: 0.2                  # fraction of the source dataset held out for test
   split_seed: 42                  # shuffle/split randomness, fixed for reproducibility
   poll_interval_seconds: 0.05     # GET /models/{id} cadence while waiting for "ready"
-  output_dir: "performance/output"   # per-dataset files: evaluation_results_<name>.csv / accuracy_results_<name>.csv
+  output_dir: "performance/evaluation"   # per-dataset files: evaluation_results_<name>.csv / accuracy_results_<name>.csv
+
+# Scalability analysis (scripts/scalability.py). Requires synthetic_<size>.csv
+# already on S3 for each size below (classification). n_estimators is fixed on
+# purpose: only the worker count varies, across worker_counts, automatically -
+# the script itself starts/stops docker compose worker services between
+# configurations (worker_control below), no manual steps needed. runs is lower
+# than evaluation.runs on purpose: it multiplies by dataset sizes AND worker
+# counts (3 x 4 = 12 configurations here). This config targets the Docker
+# Compose stack (docker compose must be run from the repo root), regardless of
+# config.yaml being the "native execution" file for the master itself.
+scalability:
+  n_estimators: 100
+  dataset_sizes: ["10k", "20k", "50k"]
+  target_column: "target"
+  runs: 10
+  output_dir: "performance/scalability"   # separate from evaluation.output_dir, so plotting scripts can tell the two apart
+  worker_counts: [1, 2, 4, 8]
+  worker_control:
+    backend: "docker"
+    docker_service_prefix: "worker-"
+    total_slots: 8
+    settle_seconds: 5
+
+# Synthetic dataset generation (scripts/synthetic.py), consumed by the
+# scalability study above (n_samples for each size come from
+# scalability.dataset_sizes, not repeated here, so the two can't diverge).
+# Column layout mirrors SDSS: redshift and two photometric bands are
+# informative (redshift is the strongest astrophysical signal separating
+# quasars from stars/galaxies; band luminosity carries real signal too),
+# the remaining three bands are redundant with those (adjacent-wavelength
+# photometry is strongly correlated), and sky position (ra, dec) is pure
+# noise - there's no physical reason an object's type depends on where it
+# is in the sky. len(informative)+len(redundant)+len(noise) must equal
+# n_features.
+synthetic:
+  seed: 42
+  n_features: 8
+  n_informative: 3
+  n_redundant: 3
+  n_classes: 3
+  class_sep: 1.0          # sklearn default: no reason to deviate, scalability.py only times train/predict, it never scores accuracy
+  columns:
+    informative: ["redshift", "u", "g"]
+    redundant: ["r", "i", "z"]
+    noise: ["ra", "dec"]

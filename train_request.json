@@ -2,5 +2,5 @@
   "dataset_url": "sdss.csv",
   "task_type": "classification",
   "target_column": "class",
-  "n_estimators": 30
+  "n_estimators": 100
 }

@@ -47,6 +47,8 @@ services:
       dockerfile: Dockerfile.worker
     container_name: drf-worker-1
     command: ["python", "cmd/worker/worker_main.py", "--port", "50051"]
+    ports:
+      - "50051:50051"   # host access for scripts/scalability.py's readiness probe (gRPC Health)
     depends_on:
       - minio
     volumes:
@@ -64,6 +66,8 @@ services:
     # Note: Inside the container, it listens on 50051.
     # The container isolation allows multiple workers to use the same internal port.
     command: ["python", "cmd/worker/worker_main.py", "--port", "50051"]
+    ports:
+      - "50052:50051"
     depends_on:
       - minio
     volumes:
@@ -79,6 +83,87 @@ services:
       dockerfile: Dockerfile.worker
     container_name: drf-worker-3
     command: [ "python", "cmd/worker/worker_main.py", "--port", "50051" ]
+    ports:
+      - "50053:50051"
+    depends_on:
+      - minio
+    volumes:
+      - ./configs/config.docker.yaml:/app/configs/config.yaml
+    networks:
+      - drf-network
+
+  # --- WORKER NODES 4-8 ---
+  # Not part of the default startup set (nothing above depends_on them): they
+  # stay stopped/uncreated until scripts/scalability.py starts them explicitly
+  # for a higher worker-count configuration ("docker compose start worker-N").
+  worker-4:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: drf-worker-4
+    command: [ "python", "cmd/worker/worker_main.py", "--port", "50051" ]
+    ports:
+      - "50054:50051"
+    depends_on:
+      - minio
+    volumes:
+      - ./configs/config.docker.yaml:/app/configs/config.yaml
+    networks:
+      - drf-network
+
+  worker-5:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: drf-worker-5
+    command: [ "python", "cmd/worker/worker_main.py", "--port", "50051" ]
+    ports:
+      - "50055:50051"
+    depends_on:
+      - minio
+    volumes:
+      - ./configs/config.docker.yaml:/app/configs/config.yaml
+    networks:
+      - drf-network
+
+  worker-6:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: drf-worker-6
+    command: [ "python", "cmd/worker/worker_main.py", "--port", "50051" ]
+    ports:
+      - "50056:50051"
+    depends_on:
+      - minio
+    volumes:
+      - ./configs/config.docker.yaml:/app/configs/config.yaml
+    networks:
+      - drf-network
+
+  worker-7:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: drf-worker-7
+    command: [ "python", "cmd/worker/worker_main.py", "--port", "50051" ]
+    ports:
+      - "50057:50051"
+    depends_on:
+      - minio
+    volumes:
+      - ./configs/config.docker.yaml:/app/configs/config.yaml
+    networks:
+      - drf-network
+
+  worker-8:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: drf-worker-8
+    command: [ "python", "cmd/worker/worker_main.py", "--port", "50051" ]
+    ports:
+      - "50058:50051"
     depends_on:
       - minio
     volumes:
