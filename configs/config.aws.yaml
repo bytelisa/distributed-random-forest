@@ -14,8 +14,15 @@ workers:
   addresses:
     # IP PRIVATI delle istanze worker EC2 (stessa VPC del master), non pubblici.
     # Un indirizzo per ogni istanza worker da provisionare
-    - "172.31.25.45:50051"    # Worker 1
-    - "172.31.30.123:50051"   # Worker 2
+    # Same order as scalability.worker_control.instance_ids below.
+    - "172.31.21.15:50051"    # worker-1  i-04f2f49bfd400cdaa
+    - "172.31.25.42:50051"    # worker-2  i-0bf07c43eefa6fca8
+    - "172.31.23.233:50051"   # worker-3  i-0feb29a4a26dc5edd
+    - "172.31.18.119:50051"   # worker-4  i-0a3178a17a31c40e5
+    - "172.31.22.183:50051"   # worker-5  i-03f6d7f2a3c6755b0
+    - "172.31.17.150:50051"   # worker-6  i-0fcb5741556b25265
+    - "172.31.28.246:50051"   # worker-7  i-0c49bb52ec6179314
+    - "172.31.17.21:50051"    # worker-8  i-03bb3a292b54919d0
 
 storage:
   type: "s3"
@@ -56,39 +63,47 @@ model_defaults:
 # into <name>_train.csv / <name>_test.csv first, and trains both models on
 # the train part.
 evaluation:
-  master_url: "http://<ALB-DNS-NAME>"   # Application Load Balancer in front of the master
+  master_url: "http://drf-master-lb-1883333178.us-east-1.elb.amazonaws.com"   # Application Load Balancer in front of the master
   runs: 100                       # train+predict cycles per model
   train_request: "train_request.json"
   predict_request: "predict_request.json"
   test_size: 0.2                  # fraction of the source dataset held out for test
   split_seed: 42                  # shuffle/split randomness, fixed for reproducibility
   poll_interval_seconds: 0.05     # GET /models/{id} cadence while waiting for "ready"
-  output_dir: "performance/evaluation"   # per-dataset files: evaluation_results_<name>.csv / accuracy_results_<name>.csv
+  output_dir: "performance/evaluation_aws"   # separate from config.yaml's, so AWS runs don't overwrite local results
 
 # Scalability analysis (scripts/scalability.py). Requires synthetic_<size>.csv
 # already on S3 for each size below (classification). n_estimators is fixed on
 # purpose: only the worker count varies, across worker_counts, automatically -
 # the script starts/stops the EC2 worker INSTANCES themselves (not just the
 # process on them) via boto3, using instance_ids below (same order as
-# workers.addresses above - index 0 is worker 1, etc). NOT VERIFIED END TO END YET
-# worker_counts and instance_ids below are placeholders: fill in with number of instances to
-# provision (may be fewer than 8 depending on budget). settle_seconds is much larger than the docker config: EC2
-# instances take real time to boot and start the worker process, a plain
-# "instance running" state isn't the same as "worker ready".
+# workers.addresses above - index 0 is worker 1, etc). The readiness probe
+# uses the instances' current PUBLIC IPs (read via describe_instances after
+# each start, since they change on every stop/start), so it works from a
+# laptop outside the VPC; needs port 50051 open to that laptop's IP in the
+# worker security group. Verified with a real stop/start cycle (2026-09-17).
+# settle_seconds is much larger than the docker config: EC2 instances take
+# real time to boot and restart the worker container.
 scalability:
   n_estimators: 100
   dataset_sizes: ["10k", "20k", "50k"]
   target_column: "target"
   runs: 10
-  output_dir: "performance/scalability"   # separate from evaluation.output_dir, so plotting scripts can tell the two apart
-  worker_counts: [1, 2]   # placeholder - adjust to however many instances you provision
+  output_dir: "performance/scalability_aws"   # separate from config.yaml's: scalability.py skips configurations already in the CSV, so sharing it with the local run would skip everything
+  worker_counts: [1, 2, 4, 8]
   worker_control:
     backend: "aws_ec2"
     region: "us-east-1"
-    instance_ids:
-      - "i-REPLACE_ME_WORKER_1"
-      - "i-REPLACE_ME_WORKER_2"
-    settle_seconds: 90
+    instance_ids:                 # same order as workers.addresses above
+      - "i-04f2f49bfd400cdaa"     # worker-1
+      - "i-0bf07c43eefa6fca8"     # worker-2
+      - "i-0feb29a4a26dc5edd"     # worker-3
+      - "i-0a3178a17a31c40e5"     # worker-4
+      - "i-03f6d7f2a3c6755b0"     # worker-5
+      - "i-0fcb5741556b25265"     # worker-6
+      - "i-0c49bb52ec6179314"     # worker-7
+      - "i-03bb3a292b54919d0"     # worker-8
+    settle_seconds: 180
 
 # Synthetic dataset generation (scripts/synthetic.py), consumed by the
 # scalability study above (n_samples for each size come from

@@ -86,8 +86,22 @@ def set_aws_workers(instance_ids: list, region: str, num_workers: int, addresses
     if to_stop:
         ec2.stop_instances(InstanceIds=to_stop)
 
+    # workers.addresses holds the private IPs the master dials, unreachable
+    # from outside the VPC - and the public ones change on every stop/start,
+    # so they can't live in the config either. Read them fresh after starting.
+    public_ip = {}
+    for reservation in ec2.describe_instances(InstanceIds=to_start)["Reservations"]:
+        for inst in reservation["Instances"]:
+            public_ip[inst["InstanceId"]] = inst.get("PublicIpAddress")
+    probe_addresses = []
+    for i, instance_id in enumerate(to_start):
+        if not public_ip.get(instance_id):
+            raise RuntimeError(f"instance {instance_id} is running but has no public IP to probe")
+        port = addresses[i].rsplit(":", 1)[1]
+        probe_addresses.append(f"{public_ip[instance_id]}:{port}")
+
     print(f"[Scalability] aws_ec2: {num_workers} instance(s) running, {len(to_stop)} stopped. Waiting for the worker process to answer Health (up to {settle_seconds}s).")
-    wait_for_workers_ready(addresses, num_workers, health_check_timeout, settle_seconds)
+    wait_for_workers_ready(probe_addresses, num_workers, health_check_timeout, settle_seconds)
 
 
 def set_worker_count(worker_control: dict, addresses: list, health_check_timeout: float, num_workers: int):
