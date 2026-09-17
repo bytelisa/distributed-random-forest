@@ -1,0 +1,7 @@
+n_estimators,distributed_accuracy,baseline_accuracy,distributed_rmse,baseline_rmse,oob_score_name,oob_score,train_time_s
+10,0.99,0.99,,,oob_accuracy,0.982447,0.441436
+30,0.9933333333333333,0.9866666666666667,,,oob_accuracy,0.987250,0.874137
+50,0.99,0.99,,,oob_accuracy,0.988500,1.761728
+100,0.9933333333333333,0.99,,,oob_accuracy,0.989250,3.465121
+150,0.9866666666666667,0.99,,,oob_accuracy,0.988750,4.947541
+200,0.9933333333333333,0.99,,,oob_accuracy,0.989500,6.735089
