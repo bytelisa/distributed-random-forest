@@ -42,6 +42,12 @@ def plot_time(df: pd.DataFrame, column: str, ci_column: str, ylabel: str, title:
     print(f"[Plot] saved {out_path}")
 
 
+def speedup(group: pd.DataFrame) -> pd.Series:
+    group = group.sort_values("num_workers")
+    single_worker_time = group.loc[group["num_workers"] == 1, "train_mean_s"].iloc[0]
+    return single_worker_time / group["train_mean_s"]
+
+
 def plot_speedup(df: pd.DataFrame, out_path: str):
     fig, ax = plt.subplots(figsize=(7, 5))
     worker_counts = sorted(df["num_workers"].unique())
@@ -49,12 +55,34 @@ def plot_speedup(df: pd.DataFrame, out_path: str):
     for size_label, group in df.groupby("dataset_size_n", sort=True):
         group = group.sort_values("num_workers")
         label = group["dataset_size"].iloc[0]
-        single_worker_time = group.loc[group["num_workers"] == 1, "train_mean_s"].iloc[0]
-        speedup = single_worker_time / group["train_mean_s"]
-        ax.plot(group["num_workers"], speedup, marker="o", label=f"{label} rows")
+        ax.plot(group["num_workers"], speedup(group), marker="o", label=f"{label} rows")
     style_worker_axis(ax, worker_counts)
     ax.set_ylabel("Speedup (T(1 worker) / T(n workers))")
     ax.set_title("Training speedup vs worker count")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    print(f"[Plot] saved {out_path}")
+
+
+def plot_efficiency(df: pd.DataFrame, out_path: str):
+    """Parallel efficiency = speedup(n) / n - how much of each added worker's
+    theoretical capacity is actually recovered, isolating the effect of fixed
+    per-worker overhead (gRPC round trips, dataset download, tree uploads)
+    that the speedup plot shows but doesn't quantify directly."""
+    fig, ax = plt.subplots(figsize=(7, 5))
+    worker_counts = sorted(df["num_workers"].unique())
+    ax.axhline(1.0, linestyle="--", color="gray", label="ideal linear speedup")
+    for size_label, group in df.groupby("dataset_size_n", sort=True):
+        group = group.sort_values("num_workers")
+        label = group["dataset_size"].iloc[0]
+        efficiency = speedup(group) / group["num_workers"]
+        ax.plot(group["num_workers"], efficiency, marker="o", label=f"{label} rows")
+    style_worker_axis(ax, worker_counts)
+    ax.set_ylabel("Parallel efficiency (speedup / worker count)")
+    ax.set_ylim(0, 1.1)
+    ax.set_title("Parallel efficiency vs worker count")
     ax.legend()
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
@@ -78,6 +106,7 @@ def main():
               "Prediction time vs worker count (95% CI)",
               os.path.join(args.output_dir, "predict_time.png"))
     plot_speedup(df, os.path.join(args.output_dir, "speedup.png"))
+    plot_efficiency(df, os.path.join(args.output_dir, "efficiency.png"))
 
 
 if __name__ == "__main__":
