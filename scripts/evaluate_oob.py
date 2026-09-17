@@ -69,24 +69,24 @@ def aggregate_regression(entries_by_row):
     return {row: sum(values) / len(values) for row, values in entries_by_row.items()}
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Compute the OOB error of an already-trained model from the per-tree artifacts left on S3.")
-    parser.add_argument("model_id")
-    parser.add_argument("--config", default="configs/config.yaml")
-    args = parser.parse_args()
+def evaluate_oob(cfg, client, bucket, model_id, name=None):
+    """Aggregates model_id's per-tree OOB artifacts into one score, writes
+    the CSV and deletes the model. Called both from this script's own CLI
+    and directly by scripts/evaluation.py, on the model it just evaluated
+    for accuracy - same object in memory, no subprocess involved.
 
-    with open(args.config) as f:
-        cfg = yaml.safe_load(f)
-    client = baseline.s3_client(cfg["storage"])
-    bucket = cfg["storage"]["bucket"]
-
-    meta = read_json(client, bucket, f"models/{args.model_id}/train_request.json")
+    name is the output file's task name (e.g. "sdss"). scripts/evaluation.py
+    passes its own, already-computed name explicitly so the two CSVs line up
+    (accuracy_results_sdss.csv / oob_results_sdss.csv) - left unset, it's
+    derived from the training file's S3 key, which is the *split* file
+    (e.g. "sdss_train"), not the original source name."""
+    meta = read_json(client, bucket, f"models/{model_id}/train_request.json")
     task_type = "classification" if meta["task_type"] == 1 else "regression"
     target_column = meta["target_column"]
     n_estimators = meta["n_estimators"]
     train_key = meta["dataset_url"]
 
-    present, missing = list_oob_artifacts(client, bucket, args.model_id, n_estimators)
+    present, missing = list_oob_artifacts(client, bucket, model_id, n_estimators)
     if missing:
         print(f"[OOB] {len(missing)}/{n_estimators} trees have no OOB artifact (worker died before uploading it): {missing}")
 
@@ -124,7 +124,8 @@ def main():
 
     print(f"[OOB] {task_type} on {train_key}, {n_estimators} trees, {len(predictions)}/{len(df)} rows scored: {score_name} = {score:.4f}")
 
-    name = os.path.splitext(os.path.basename(train_key))[0]
+    if name is None:
+        name = os.path.splitext(os.path.basename(train_key))[0]
     output_dir = cfg["evaluation"]["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
     output_csv = os.path.join(output_dir, f"oob_results_{name}.csv")
@@ -135,7 +136,7 @@ def main():
         ])
         writer.writeheader()
         writer.writerow({
-            "model_id": args.model_id,
+            "model_id": model_id,
             "task_type": task_type,
             "dataset": train_key,
             "n_estimators": n_estimators,
@@ -146,8 +147,24 @@ def main():
         })
     print(f"[OOB] results written to {output_csv}")
 
-    benchmark.delete_model(client, bucket, args.model_id)
-    print(f"[OOB] model {args.model_id} deleted from S3.")
+    benchmark.delete_model(client, bucket, model_id)
+    print(f"[OOB] model {model_id} deleted from S3.")
+
+    return score_name, score
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Compute the OOB error of an already-trained model from the per-tree artifacts left on S3.")
+    parser.add_argument("model_id")
+    parser.add_argument("--config", default="configs/config.yaml")
+    args = parser.parse_args()
+
+    with open(args.config) as f:
+        cfg = yaml.safe_load(f)
+    client = baseline.s3_client(cfg["storage"])
+    bucket = cfg["storage"]["bucket"]
+
+    evaluate_oob(cfg, client, bucket, args.model_id)
 
 
 if __name__ == "__main__":
