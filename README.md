@@ -149,4 +149,22 @@ or rebuild a single image:
 docker-compose up --build -d master
 ```
 
+## 11. Performance analysis
+Requires the master and workers running (steps 5-6) and the source dataset already uploaded to the bucket. Edit `train_request.json`/`predict_request.json` to pick the task/dataset; the `evaluation` section in `configs/config.yaml` controls run counts, split size/seed and output paths.
+
+```bash
+python scripts/baseline.py     # non-distributed baseline: one train + predict, timings only
+python scripts/benchmark.py    # distributed vs baseline: repeated train/predict timings (mean/std) -> CSV
+python scripts/evaluation.py   # distributed vs baseline: accuracy/RMSE on the held-out test set -> CSV
+```
+
+For the scalability study (fixed `n_estimators`, dataset size and worker count swept automatically): the `synthetic`/`scalability` sections of the config control dataset sizes, worker counts, repetitions and how workers are started/stopped between configurations (`docker` or `aws_ec2` backend).
+
+```bash
+python scripts/synthetic.py         # generates and uploads synthetic_<size>.csv for each configured size
+python scripts/scalability.py       # sweeps dataset size x worker count -> performance/scalability/scalability_results.csv
+python scripts/plot_scalability.py  # training/predict time and speedup plots -> performance/scalability/plots/
+```
+
+`scalability.py` writes the CSV after every configuration and skips ones already present on a re-run (`--force` to redo them anyway).
 
