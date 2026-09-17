@@ -108,6 +108,33 @@ def train_tree(X: pd.DataFrame, y: pd.Series, task_type: str, seed: int, default
         raise ModelError(f"Scikit-learn training failed: {e}")
 
 
+def compute_oob_predictions(tree, X: pd.DataFrame, task_type: str, bootstrap_indices) -> list:
+    """
+    Runs the already-fitted tree on the rows its own bootstrap sample left
+    out (out-of-bag) - X is the full training set, in the same row order the
+    bootstrap indices refer to. One entry per OOB row, self-describing so
+    scripts/evaluate_oob.py never has to re-derive anything:
+    {"row": <position>, "classes": [...], "probabilities": [...]} for a
+    classifier (only the classes this tree's bootstrap sample happened to
+    contain), {"row": <position>, "value": v} for a regressor.
+    """
+    included = np.unique(bootstrap_indices)
+    oob_positions = np.setdiff1d(np.arange(len(X)), included)
+    if len(oob_positions) == 0:
+        return []
+
+    X_oob = X.iloc[oob_positions]
+    if task_type == 'classification':
+        probabilities = tree.predict_proba(X_oob)
+        classes = [str(c) for c in tree.classes_]
+        return [
+            {"row": int(row), "classes": classes, "probabilities": [float(p) for p in probs]}
+            for row, probs in zip(oob_positions, probabilities)
+        ]
+    values = tree.predict(X_oob)
+    return [{"row": int(row), "value": float(v)} for row, v in zip(oob_positions, values)]
+
+
 def load_and_predict(model_path: str, features: list) -> dict:
     """
     Loads a serialized tree and returns its raw output for one sample:
