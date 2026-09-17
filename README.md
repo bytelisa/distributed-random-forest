@@ -155,9 +155,9 @@ Requires the master and workers running (steps 5-6) and the source dataset alrea
 ```bash
 python scripts/baseline.py     # non-distributed baseline: one train + predict, timings only
 python scripts/benchmark.py    # distributed vs baseline: repeated train/predict timings (mean/std) -> CSV
-python scripts/evaluation.py   # distributed vs baseline: accuracy/RMSE on the held-out test set -> CSV
+python scripts/evaluation.py   # distributed vs baseline: accuracy/RMSE on the held-out test set, then OOB accuracy/RMSE from the same model's per-tree artifacts -> two CSVs
 ```
-`evaluation.py` trains one distributed model, evaluates it, and deliberately leaves it on S3 instead of deleting it — it prints the `model_id` at the end. Feed that same id to `evaluate_oob.py` to also score the model on its own out-of-bag predictions (the per-tree artifacts left by training), then delete it:
+`evaluation.py` trains one distributed model, scores it (accuracy in distributed vs baseline, OOB), and deletes it once both are done. To (re-)score OOB on a model on its own, e.g. one left over from a failed run:
 ```bash
 python scripts/evaluate_oob.py <model_id>   # OOB accuracy/RMSE from the per-tree artifacts -> CSV, then deletes the model
 ```
