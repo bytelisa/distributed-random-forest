@@ -5,54 +5,125 @@ info:
     version: 1.0.0
 
 paths:
-    /train:
-      post:
-        summary: Start a new training process
-        description: Start the asynchronous training of a new RandomForest model.
-        requestBoody:
-          required: true
-          content:
-            application/json:
-              schema:
-                type:object
-              properties:
-                dataset_url:
-                  type: string
-                  description: public URL of the training dataset.
-                  example: "s3.//my-datasets/iris.csv"
-                task_type:
-                  type: string
-                  enum: [ classification, regression ]
-                  description: Type of ML problem to solve.
-                # (examples of hyperparameters)
-                n_estimators:
-                  type: integer
-                  description: Total number of trees to train in the forest.
-                  default: 100
-                maxdepth:
-                  type: integer
-                  description: Maximum nesting depth of each tree.
-                  nullable: true
-
-              required: dataset_url
+    /health:
+      get:
+        summary: Master liveness check
+        description: Used by the Application Load Balancer's target group. Reports only whether the master itself is up, not the worker pool.
         responses:
-          '202':
-            description: Training accepted and started in background.
+          '200':
+            description: Master is alive.
             content:
               application/json:
                 schema:
                   type: object
                   properties:
-                    model_id:
+                    status:
                       type: string
-                      format: uuid
-                      description: unique ID assigned to the model for future requests.
+                      example: "ok"
+
+    /train:
+      post:
+        summary: Start a new training process
+        description: Start the asynchronous training of a new RandomForest model. Every tree draws its own bootstrap sample from the full dataset at dataset_url and is trained on whichever worker it's assigned to.
+        requestBody:
+          required: true
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - dataset_url
+                  - task_type
+                  - target_column
+                properties:
+                  dataset_url:
+                    type: string
+                    description: Object key of the training dataset on the configured S3 bucket.
+                    example: "iris_train.csv"
+                  task_type:
+                    type: string
+                    enum: [ classification, regression ]
+                  target_column:
+                    type: string
+                    description: Name of the label column in the dataset.
+                    example: "class"
+                  n_estimators:
+                    type: integer
+                    minimum: 0
+                    description: Total number of trees in the forest. Omitted or 0 falls back to the server's configured default; negative values are rejected.
+                  hyperparameters:
+                    type: object
+                    description: >
+                      Decision tree hyperparameters, applied to every tree. Only these seven keys are accepted -
+                      ensemble-level RandomForest options (bootstrap, max_samples, oob_score) don't apply, since
+                      each tree is trained as a standalone DecisionTreeClassifier/Regressor. Omitted keys fall back
+                      to the server's configured per-task defaults.
+                    properties:
+                      max_depth:
+                        type: integer
+                        minimum: 1
+                        nullable: true
+                      max_leaf_nodes:
+                        type: integer
+                        minimum: 1
+                        nullable: true
+                      min_samples_split:
+                        description: Integer >= 2, or a fraction in (0, 1].
+                        oneOf:
+                          - type: integer
+                            minimum: 2
+                          - type: number
+                            minimum: 0
+                            exclusiveMinimum: true
+                            maximum: 1
+                      min_samples_leaf:
+                        description: Integer >= 1, or a fraction in (0, 1].
+                        oneOf:
+                          - type: integer
+                            minimum: 1
+                          - type: number
+                            minimum: 0
+                            exclusiveMinimum: true
+                            maximum: 1
+                      max_features:
+                        description: '"sqrt", "log2", a positive integer, a fraction in (0, 1], or null.'
+                        nullable: true
+                        oneOf:
+                          - type: string
+                            enum: [ sqrt, log2 ]
+                          - type: integer
+                            minimum: 1
+                          - type: number
+                            minimum: 0
+                            exclusiveMinimum: true
+                            maximum: 1
+                      criterion:
+                        description: Allowed values depend on task_type - gini/entropy/log_loss for classification, squared_error/absolute_error/friedman_mse/poisson for regression.
+                        type: string
+                        example: "entropy"
+                      class_weight:
+                        description: Classification only. "balanced" or null.
+                        type: string
+                        enum: [ balanced ]
+                        nullable: true
+        responses:
+          '202':
+            description: Training accepted; runs asynchronously in the background. Poll GET /models/{model_id} for completion.
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ModelStatusResponse'
           '400':
-            description: Invalid request (eg. malformed URL)
+            description: Malformed request body, invalid task_type, an unsupported or invalid hyperparameter, or a negative n_estimators.
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ErrorResponse'
 
     /models/{model_id}:
       get:
         summary: Check model status
+        description: Status is derived by inspecting S3, not stored separately - "ready" means every tree of the forest is present.
         parameters:
           - name: model_id
             description: Unique identifier of the trained model.
@@ -67,23 +138,24 @@ paths:
             content:
               application/json:
                 schema:
-                  type: object
-                  properties:
-                    model_id:
-                      type: string
-                      format: uuid
-                    status:
-                      type: string
-                      enum: [ training, ready, failed ]
-                    created_at:
-                      type: string
-                      format: date-time
+                  $ref: '#/components/schemas/ModelStatusResponse'
           '404':
-            description: Model not found.
+            description: No model with this ID exists.
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ErrorResponse'
+          '500':
+            description: Could not read model status from storage.
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ErrorResponse'
 
     /predict/{model_id}:
       post:
         summary: Execute inference using a trained model
+        description: Synchronous - the master queries every tree's worker and aggregates (soft voting for classification, averaging for regression) before responding.
         parameters:
           - name: model_id
             in: path
@@ -93,25 +165,24 @@ paths:
               type: string
               format: uuid
         requestBody:
-          description: Data to use for the prediction. Format must be a JSON object where each key is the name of a feature and the value is the corresponding feature value.
           required: true
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - features
+                  - task_type
                 properties:
                   features:
                     type: array
                     items:
                       type: number
-                    description: Array of feature values
+                    description: Feature values, in the same column order as the training dataset (after dropping the target column).
                   task_type:
                     type: string
                     enum: [ classification, regression ]
-                    description: The type of the model (must match training task type)
-                required:
-                  - features
-                  - task_type
+                    description: Must match the task_type the model was trained with.
         responses:
           '200':
             description: Prediction result.
@@ -120,15 +191,54 @@ paths:
                 schema:
                   type: object
                   properties:
+                    model_id:
+                      type: string
+                      format: uuid
                     prediction:
-                      # todo enter prediction format
-                      oneOf:
-                        - type: string
-                        - type: number
+                      type: string
+                      description: The predicted class label (classification) or numeric value formatted as a string (regression).
+                    warning:
+                      type: string
+                      description: Present only when one or more trees couldn't be reached even after retries - the prediction was aggregated from a partial forest. Names how many trees out of how many were used.
           '400':
-            description: Invalid inference input.
+            description: Malformed request body.
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ErrorResponse'
           '404':
-            description: Model not found.
-          '409':
-            description: Model not yet ready for inference (still training).
+            description: No model with this ID exists.
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ErrorResponse'
+          '500':
+            description: Inference failed - e.g. the model isn't fully trained yet, or zero trees responded.
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/ErrorResponse'
 
+components:
+  schemas:
+    ModelStatusResponse:
+      type: object
+      properties:
+        model_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [ training, ready, failed ]
+        message:
+          type: string
+          description: Human-readable detail - the last error when status is "failed", a short confirmation right after a train request is accepted, empty otherwise.
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+        model_id:
+          type: string
+          format: uuid
+          description: Present on 404s to echo back the ID that wasn't found.
