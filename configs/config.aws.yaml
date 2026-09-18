@@ -104,6 +104,7 @@ scalability:
       - "i-0c49bb52ec6179314"     # worker-7
       - "i-03bb3a292b54919d0"     # worker-8
     settle_seconds: 180
+    probe: "public"     # "public" when the script runs outside the VPC (laptop), "private" when it runs on an EC2 instance inside it
 
 # Synthetic dataset generation (scripts/synthetic.py), consumed by the
 # scalability study above (n_samples for each size come from

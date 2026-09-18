@@ -70,7 +70,7 @@ def set_docker_workers(prefix: str, total_slots: int, num_workers: int, addresse
     wait_for_workers_ready(addresses, num_workers, health_check_timeout, settle_seconds)
 
 
-def set_aws_workers(instance_ids: list, region: str, num_workers: int, addresses: list, health_check_timeout: float, settle_seconds: float):
+def set_aws_workers(instance_ids: list, region: str, num_workers: int, addresses: list, health_check_timeout: float, settle_seconds: float, probe: str = "public"):
     import boto3
 
     if num_workers > len(instance_ids):
@@ -86,19 +86,24 @@ def set_aws_workers(instance_ids: list, region: str, num_workers: int, addresses
     if to_stop:
         ec2.stop_instances(InstanceIds=to_stop)
 
-    # workers.addresses holds the private IPs the master dials, unreachable
-    # from outside the VPC - and the public ones change on every stop/start,
-    # so they can't live in the config either. Read them fresh after starting.
-    public_ip = {}
-    for reservation in ec2.describe_instances(InstanceIds=to_start)["Reservations"]:
-        for inst in reservation["Instances"]:
-            public_ip[inst["InstanceId"]] = inst.get("PublicIpAddress")
-    probe_addresses = []
-    for i, instance_id in enumerate(to_start):
-        if not public_ip.get(instance_id):
-            raise RuntimeError(f"instance {instance_id} is running but has no public IP to probe")
-        port = addresses[i].rsplit(":", 1)[1]
-        probe_addresses.append(f"{public_ip[instance_id]}:{port}")
+    if probe == "private":
+        # Running inside the VPC (e.g. on a worker instance): the private
+        # addresses the master dials are reachable directly.
+        probe_addresses = addresses[:num_workers]
+    else:
+        # Running from outside the VPC: workers.addresses holds private IPs,
+        # unreachable from here - and the public ones change on every
+        # stop/start, so they can't live in the config. Read them fresh.
+        public_ip = {}
+        for reservation in ec2.describe_instances(InstanceIds=to_start)["Reservations"]:
+            for inst in reservation["Instances"]:
+                public_ip[inst["InstanceId"]] = inst.get("PublicIpAddress")
+        probe_addresses = []
+        for i, instance_id in enumerate(to_start):
+            if not public_ip.get(instance_id):
+                raise RuntimeError(f"instance {instance_id} is running but has no public IP to probe")
+            port = addresses[i].rsplit(":", 1)[1]
+            probe_addresses.append(f"{public_ip[instance_id]}:{port}")
 
     print(f"[Scalability] aws_ec2: {num_workers} instance(s) running, {len(to_stop)} stopped. Waiting for the worker process to answer Health (up to {settle_seconds}s).")
     wait_for_workers_ready(probe_addresses, num_workers, health_check_timeout, settle_seconds)
@@ -110,7 +115,7 @@ def set_worker_count(worker_control: dict, addresses: list, health_check_timeout
     if backend == "docker":
         set_docker_workers(worker_control["docker_service_prefix"], worker_control["total_slots"], num_workers, addresses, health_check_timeout, settle)
     elif backend == "aws_ec2":
-        set_aws_workers(worker_control["instance_ids"], worker_control["region"], num_workers, addresses, health_check_timeout, settle)
+        set_aws_workers(worker_control["instance_ids"], worker_control["region"], num_workers, addresses, health_check_timeout, settle, worker_control.get("probe", "public"))
     else:
         raise ValueError(f"unknown worker_control.backend {backend!r}")
 
