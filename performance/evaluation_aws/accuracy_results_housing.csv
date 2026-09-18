@@ -1,0 +1,3 @@
+model,task_type,dataset,n_estimators,test_rows,accuracy,mse,rmse,partial_predictions
+distributed,regression,housing_train.csv,100,4128,,2785580978.509621,52778.60341567993,0
+baseline,regression,housing_train.csv,100,4128,,2773447834.5172973,52663.534200785434,0

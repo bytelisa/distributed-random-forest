@@ -1,0 +1,2 @@
+model_id,task_type,dataset,n_estimators,rows_scored,rows_excluded,trees_missing_oob,oob_rmse
+22540520-990d-4137-9746-a09fb7106f90,regression,housing_train.csv,100,16512,0,0,52133.666156
