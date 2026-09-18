@@ -1,3 +1,3 @@
 model,task_type,dataset,n_estimators,runs,train_mean_s,train_std_s,predict_mean_s,predict_std_s
-distributed,classification,sdss_train.csv,100,50,2.468345,0.303923,0.827474,0.140467
-baseline,classification,sdss_train.csv,100,50,1.823110,0.055688,0.009175,0.000553
+distributed,classification,sdss_train.csv,100,100,2.563166,0.295593,0.889753,0.303636
+baseline,classification,sdss_train.csv,100,100,1.851107,0.202267,0.009224,0.000761
