@@ -128,23 +128,25 @@ def main():
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
-    scal_output_dir = cfg["scalability"]["output_dir"]
+    scal = cfg["scalability"]
+    scal_output_dir = scal["output_dir"]
+    suffix = scal.get("plot_suffix", "")
     csv_path = args.csv or os.path.join(scal_output_dir, "scalability_results.csv")
     raw_csv = os.path.join(scal_output_dir, "scalability_runs.csv")
-    output_dir = args.output_dir or os.path.join(scal_output_dir, "plots")
+    output_dir = args.output_dir or os.path.join(scal_output_dir, f"plots{suffix}")
 
     df = load(csv_path)
     os.makedirs(output_dir, exist_ok=True)
 
     plot_time(df, "train_mean_s", "train_ci95_s", "Training time (s)",
               "Training time vs worker count (95% CI)",
-              os.path.join(output_dir, "training_time.png"))
+              os.path.join(output_dir, f"training_time{suffix}.png"))
     plot_time(df, "predict_mean_s", "predict_ci95_s", "Prediction time (s)",
               "Prediction time vs worker count (95% CI)",
-              os.path.join(output_dir, "predict_time.png"))
-    plot_speedup(df, os.path.join(output_dir, "speedup.png"))
-    plot_efficiency(df, os.path.join(output_dir, "efficiency.png"))
-    plot_boxplot(raw_csv, os.path.join(output_dir, "training_time_boxplot.png"))
+              os.path.join(output_dir, f"predict_time{suffix}.png"))
+    plot_speedup(df, os.path.join(output_dir, f"speedup{suffix}.png"))
+    plot_efficiency(df, os.path.join(output_dir, f"efficiency{suffix}.png"))
+    plot_boxplot(raw_csv, os.path.join(output_dir, f"training_time_boxplot{suffix}.png"))
 
 
 if __name__ == "__main__":

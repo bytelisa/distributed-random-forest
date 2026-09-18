@@ -71,6 +71,7 @@ evaluation:
   split_seed: 42                  # shuffle/split randomness, fixed for reproducibility
   poll_interval_seconds: 0.05     # GET /models/{id} cadence while waiting for "ready"
   output_dir: "performance/evaluation_aws"   # separate from config.yaml's, so AWS runs don't overwrite local results
+  plot_suffix: "_aws"                        # plots go to plots_aws/, filenames get an _aws suffix too
 
 # Scalability analysis (scripts/scalability.py). Requires synthetic_<size>.csv
 # already on S3 for each size below (classification). n_estimators is fixed on
@@ -90,6 +91,7 @@ scalability:
   target_column: "target"
   runs: 10
   output_dir: "performance/scalability_aws"   # separate from config.yaml's: scalability.py skips configurations already in the CSV, so sharing it with the local run would skip everything
+  plot_suffix: "_aws"                         # plots go to plots_aws/, filenames get an _aws suffix too
   worker_counts: [1, 2, 4, 8]
   worker_control:
     backend: "aws_ec2"

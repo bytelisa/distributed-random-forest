@@ -128,7 +128,7 @@ def load_predictions(input_dir: str) -> dict:
     return tasks
 
 
-def plot_confusion_matrices(predictions_tasks: dict, output_dir: str):
+def plot_confusion_matrices(predictions_tasks: dict, output_dir: str, suffix: str = ""):
     if not predictions_tasks:
         print("[PlotEvaluation] no predictions_*.csv found, skipping confusion matrices")
         return
@@ -141,7 +141,7 @@ def plot_confusion_matrices(predictions_tasks: dict, output_dir: str):
         axes[1].set_title("Baseline")
         fig.suptitle(f"Confusion matrix - {name}")
         fig.tight_layout()
-        out_path = os.path.join(output_dir, f"confusion_matrix_{name}.png")
+        out_path = os.path.join(output_dir, f"confusion_matrix_{name}{suffix}.png")
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
         print(f"[PlotEvaluation] saved {out_path}")
@@ -157,7 +157,7 @@ def load_validation_curves(input_dir: str) -> dict:
     return curves
 
 
-def plot_validation_curves(curves: dict, output_dir: str):
+def plot_validation_curves(curves: dict, output_dir: str, suffix: str = ""):
     if not curves:
         print("[PlotEvaluation] no validation_curve_*.csv found, skipping validation curve plots")
         return
@@ -189,7 +189,7 @@ def plot_validation_curves(curves: dict, output_dir: str):
 
         fig.suptitle(f"OOB convergence - {name}")
         fig.tight_layout()
-        out_path = os.path.join(output_dir, f"validation_curve_{name}.png")
+        out_path = os.path.join(output_dir, f"validation_curve_{name}{suffix}.png")
         fig.savefig(out_path, dpi=150)
         plt.close(fig)
         print(f"[PlotEvaluation] saved {out_path}")
@@ -204,8 +204,10 @@ def main():
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
-    input_dir = args.input_dir or cfg["evaluation"]["output_dir"]
-    output_dir = args.output_dir or os.path.join(input_dir, "plots")
+    evaluation = cfg["evaluation"]
+    suffix = evaluation.get("plot_suffix", "")
+    input_dir = args.input_dir or evaluation["output_dir"]
+    output_dir = args.output_dir or os.path.join(input_dir, f"plots{suffix}")
     os.makedirs(output_dir, exist_ok=True)
 
     accuracy_tasks = load_rows_by_model(input_dir, "accuracy_results_")
@@ -214,10 +216,10 @@ def main():
     predictions_tasks = load_predictions(input_dir)
     validation_curves = load_validation_curves(input_dir)
 
-    plot_accuracy_vs_oob(accuracy_tasks, oob_tasks, os.path.join(output_dir, "accuracy_vs_oob.png"))
-    plot_time_comparison(timing_tasks, os.path.join(output_dir, "time_comparison.png"))
-    plot_confusion_matrices(predictions_tasks, output_dir)
-    plot_validation_curves(validation_curves, output_dir)
+    plot_accuracy_vs_oob(accuracy_tasks, oob_tasks, os.path.join(output_dir, f"accuracy_vs_oob{suffix}.png"))
+    plot_time_comparison(timing_tasks, os.path.join(output_dir, f"time_comparison{suffix}.png"))
+    plot_confusion_matrices(predictions_tasks, output_dir, suffix)
+    plot_validation_curves(validation_curves, output_dir, suffix)
 
 
 if __name__ == "__main__":
