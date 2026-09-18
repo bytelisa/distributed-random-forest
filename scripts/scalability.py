@@ -84,7 +84,11 @@ def set_aws_workers(instance_ids: list, region: str, num_workers: int, addresses
         ec2.start_instances(InstanceIds=to_start)
         ec2.get_waiter("instance_running").wait(InstanceIds=to_start)
     if to_stop:
+        # Wait for the actual "stopped" state: for 30-60s after the stop call
+        # the worker processes are still up and the master's health check
+        # still hands them trees, which would contaminate the first runs.
         ec2.stop_instances(InstanceIds=to_stop)
+        ec2.get_waiter("instance_stopped").wait(InstanceIds=to_stop)
 
     if probe == "private":
         # Running inside the VPC (e.g. on a worker instance): the private
