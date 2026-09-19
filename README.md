@@ -86,6 +86,7 @@ go run cmd/master/master_main.go
 ```
 
 ## Local storage: MinIO instead of S3
+MiniIO enables local deployment acting as a replacement for S3.
 ```bash
 docker-compose up -d
 ```
