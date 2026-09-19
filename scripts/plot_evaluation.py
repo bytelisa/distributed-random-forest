@@ -165,20 +165,18 @@ def plot_validation_curves(curves: dict, output_dir: str, suffix: str = ""):
     for name, rows in curves.items():
         n_values = [int(r["n_estimators"]) for r in rows]
         classification = rows[0]["oob_score_name"] == "oob_accuracy"
-        metric_key = "accuracy" if classification else "rmse"
         oob_values = [float(r["oob_score"]) for r in rows]
         oob_curve = [1 - v for v in oob_values] if classification else oob_values
-        dist_values = [float(r[f"distributed_{metric_key}"]) for r in rows]
-        dist_curve = [1 - v for v in dist_values] if classification else dist_values
         train_times = [float(r["train_time_s"]) for r in rows]
 
+        # Only the OOB curve is plotted: the held-out set used by
+        # validation_curve.py is small enough that its error moves in
+        # steps of one row, so it carries no information about convergence.
         fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-        axes[0].plot(n_values, oob_curve, marker="o", label="OOB")
-        axes[0].plot(n_values, dist_curve, marker="o", label="test set")
+        axes[0].plot(n_values, oob_curve, marker="o")
         axes[0].set_xlabel("Number of trees")
-        axes[0].set_ylabel("Error rate" if classification else "RMSE")
+        axes[0].set_ylabel("OOB error rate" if classification else "OOB RMSE")
         axes[0].set_title("Validation curve")
-        axes[0].legend()
         axes[0].grid(True, alpha=0.3)
 
         axes[1].plot(n_values, train_times, marker="o", color="tab:red")
